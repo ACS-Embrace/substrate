@@ -221,7 +221,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback,
     private native void nativeDispatchKeyEvent(int type, int key, char[] chars, int charCount, int modifiers);
     private native void nativeDispatchLifecycleEvent(String event);
     private native void nativeDispatchActivityResult(int requestCode, int resultCode, Intent intent);
-    private native void nativeNotifyMenu(int x, int y, int xAbs, int yAbs, boolean isKeyboardTrigger);
+    // private native void nativeNotifyMenu(int x, int y, int xAbs, int yAbs, boolean isKeyboardTrigger);
 
     class InternalSurfaceView extends SurfaceView {
         private static final int ACTION_POINTER_STILL = -1;
@@ -273,15 +273,15 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback,
                 touchXs[0] = (int) (event.getX()/density);
                 touchYs[0] = (int) (event.getY()/density);
 
-                if (action == MotionEvent.ACTION_DOWN) {
-                    longPress.setX(touchXs[0]);
-                    longPress.setY(touchYs[0]);
-                    handler.postDelayed(longPress, ViewConfiguration.getLongPressTimeout());
-                }
+                // if (action == MotionEvent.ACTION_DOWN) {
+                //     longPress.setX(touchXs[0]);
+                //     longPress.setY(touchYs[0]);
+                //     handler.postDelayed(longPress, ViewConfiguration.getLongPressTimeout());
+                // }
 
-                if (action == MotionEvent.ACTION_UP) {
-                    handler.removeCallbacks(longPress);
-                }
+                // if (action == MotionEvent.ACTION_UP) {
+                //     handler.removeCallbacks(longPress);
+                // }
             }
             if (!isFocused()) {
                 Log.v(TAG, "View wasn't focused, requesting focus");
@@ -390,27 +390,27 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback,
             return consume;
         }
 
-        private final Handler handler = new Handler();
-        private final LongPress longPress = new LongPress();
+        // private final Handler handler = new Handler();
+        // private final LongPress longPress = new LongPress();
 
-        private class LongPress implements Runnable {
+        // private class LongPress implements Runnable {
 
-            int x, y;
+        //     int x, y;
 
-            void setX(int x) {
-                this.x = x;
-            }
+        //     void setX(int x) {
+        //         this.x = x;
+        //     }
 
-            void setY(int y) {
-                this.y = y;
-            }
+        //     void setY(int y) {
+        //         this.y = y;
+        //     }
 
-            @Override
-            public void run() {
-                Log.d(TAG, "Long press!");
-                nativeNotifyMenu(x, y, x, y, false);
-            }
-        }
+        //     @Override
+        //     public void run() {
+        //         Log.d(TAG, "Long press!");
+        //         nativeNotifyMenu(x, y, x, y, false);
+        //     }
+        // }
 
     }
 
