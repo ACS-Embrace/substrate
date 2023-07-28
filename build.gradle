@@ -13,6 +13,14 @@ sourceCompatibility = JavaVersion.VERSION_11
 
 repositories {
     mavenCentral()
+
+    maven {
+        url repsyUrl
+        credentials {
+            username repsyUsername
+            password repsyPassword
+        }
+    }
 }
 
 test {
@@ -68,53 +76,38 @@ task javadocJar(type: Jar) {
 publishing {
     publications {
         maven(MavenPublication) {
-            artifactId = 'substrate'
             from components.java
-            artifact sourcesJar
-            artifact javadocJar
-            pom {
-                name = 'Gluon Substrate'
-                description = 'Create native Java(FX) apps for desktop, mobile and embedded'
-                url = 'https://github.com/gluonhq/substrate'
-                licenses {
-                    license {
-                        name = 'GNU General Public License v2.0'
-                        url = 'https://www.gnu.org/licenses/old-licenses/lgpl-2.0.html'
-                    }
-                }
-                developers {
-                    developer {
-                        name = 'Johan Vos'
-                        email = 'johan.vos@gluonhq.com'
-                    }
-                }
-                scm {
-                    connection = 'scm:git:git://github.com:gluonhq/substrate.git'
-                    developerConnection = 'scm:git:ssh://github.com:gluonhq/substrate.git'
-                    url = 'https://github.com/gluonhq/substrate'
-                }
+        }
+    }
+
+    repositories {
+        maven {
+            url repsyUrl
+            credentials {
+                username repsyUsername
+                password repsyPassword
             }
         }
     }
 }
 
-signing {
-    required = { gradle.taskGraph.hasTask(publish) && !version.endsWith("SNAPSHOT") }
-    sign publishing.publications.maven
-}
+// signing {
+//     required = { gradle.taskGraph.hasTask(publish) && !version.endsWith("SNAPSHOT") }
+//     sign publishing.publications.maven
+// }
 
-nexusPublishing {
-    repositories {
-        sonatype()
-    }
-    // credentials are shared from staging plugin
-    clientTimeout = Duration.ofMinutes(5)
-    connectTimeout = Duration.ofMinutes(5)
-}
+// nexusPublishing {
+//     repositories {
+//         sonatype()
+//     }
+//     // credentials are shared from staging plugin
+//     clientTimeout = Duration.ofMinutes(5)
+//     connectTimeout = Duration.ofMinutes(5)
+// }
 
-nexusStaging {
-    username = project.hasProperty('sonatypeUsername') ? project.property('sonatypeUsername') : ''
-    password = project.hasProperty('sonatypePassword') ? project.property('sonatypePassword') : ''
-    numberOfRetries = 30
-    delayBetweenRetriesInMillis = 10000
-}
+// nexusStaging {
+//     username = project.hasProperty('sonatypeUsername') ? project.property('sonatypeUsername') : ''
+//     password = project.hasProperty('sonatypePassword') ? project.property('sonatypePassword') : ''
+//     numberOfRetries = 30
+//     delayBetweenRetriesInMillis = 10000
+// }

@@ -291,89 +291,89 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback,
             return true;
         }
 
-        @Override
-        public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
-            Log.d(TAG, "onCreateInputConnection");
-            // Allows predictive text
-            outAttrs.inputType = InputType.TYPE_CLASS_TEXT;
-            // Remove top textfield editor on landscape
-            outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI;
+        // @Override
+        // public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
+        //     Log.d(TAG, "onCreateInputConnection");
+        //     // Allows predictive text
+        //     outAttrs.inputType = InputType.TYPE_CLASS_TEXT;
+        //     // Remove top textfield editor on landscape
+        //     outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI;
 
-            return new BaseInputConnection(this, true) {
+        //     return new BaseInputConnection(this, true) {
 
-                @Override
-                public boolean setComposingText(CharSequence text, int newCursorPosition) {
-                    // remove old text
-                    replaceText();
-                    boolean result = super.setComposingText(text, newCursorPosition);
-                    processText(text.toString());
-                    return result;
-                }
+        //         @Override
+        //         public boolean setComposingText(CharSequence text, int newCursorPosition) {
+        //             // remove old text
+        //             replaceText();
+        //             boolean result = super.setComposingText(text, newCursorPosition);
+        //             processText(text.toString());
+        //             return result;
+        //         }
 
-                @Override
-                public boolean commitText(CharSequence text, int newCursorPosition) {
-                    // remove old text
-                    replaceText();
-                    boolean result = super.commitText(text, newCursorPosition);
-                    processText(text.toString());
-                    return result;
-                }
+        //         @Override
+        //         public boolean commitText(CharSequence text, int newCursorPosition) {
+        //             // remove old text
+        //             replaceText();
+        //             boolean result = super.commitText(text, newCursorPosition);
+        //             processText(text.toString());
+        //             return result;
+        //         }
 
-                @Override
-                public boolean deleteSurroundingText(int beforeLength, int afterLength) {
-                    boolean result = super.deleteSurroundingText(beforeLength, afterLength);
-                    resetText(beforeLength - afterLength);
-                    return result;
-                }
+        //         @Override
+        //         public boolean deleteSurroundingText(int beforeLength, int afterLength) {
+        //             boolean result = super.deleteSurroundingText(beforeLength, afterLength);
+        //             resetText(beforeLength - afterLength);
+        //             return result;
+        //         }
 
-                private void processText(String text) {
-                    if (ENTER_STRING.equals(text)) {
-                        // send enter
-                        processAndroidKeyEvent(ENTER_DOWN_EVENT);
-                        processAndroidKeyEvent(ENTER_UP_EVENT);
-                    } else {
-                        // send action_multiple with new text
-                        processAndroidKeyEvent(new KeyEvent(SystemClock.uptimeMillis(), text, -1, 0));
-                    }
-                }
+        //         private void processText(String text) {
+        //             if (ENTER_STRING.equals(text)) {
+        //                 // send enter
+        //                 processAndroidKeyEvent(ENTER_DOWN_EVENT);
+        //                 processAndroidKeyEvent(ENTER_UP_EVENT);
+        //             } else {
+        //                 // send action_multiple with new text
+        //                 processAndroidKeyEvent(new KeyEvent(SystemClock.uptimeMillis(), text, -1, 0));
+        //             }
+        //         }
 
-                private void replaceText() {
-                    Editable content = getEditable();
-                    if (content == null) {
-                        return;
-                    }
+        //         private void replaceText() {
+        //             Editable content = getEditable();
+        //             if (content == null) {
+        //                 return;
+        //             }
 
-                    int a = getComposingSpanStart(content);
-                    int b = getComposingSpanEnd(content);
-                    if (b < a) {
-                        int tmp = a;
-                        a = b;
-                        b = tmp;
-                    }
+        //             int a = getComposingSpanStart(content);
+        //             int b = getComposingSpanEnd(content);
+        //             if (b < a) {
+        //                 int tmp = a;
+        //                 a = b;
+        //                 b = tmp;
+        //             }
 
-                    if (a == -1 || b == -1) {
-                        a = Selection.getSelectionStart(content);
-                        b = Selection.getSelectionEnd(content);
-                        if (a < 0) a = 0;
-                        if (b < 0) b = 0;
-                        if (b < a) {
-                            int tmp = a;
-                            a = b;
-                            b = tmp;
-                        }
-                    }
-                    resetText(b - a);
-                }
+        //             if (a == -1 || b == -1) {
+        //                 a = Selection.getSelectionStart(content);
+        //                 b = Selection.getSelectionEnd(content);
+        //                 if (a < 0) a = 0;
+        //                 if (b < 0) b = 0;
+        //                 if (b < a) {
+        //                     int tmp = a;
+        //                     a = b;
+        //                     b = tmp;
+        //                 }
+        //             }
+        //             resetText(b - a);
+        //         }
 
-                private void resetText(int length) {
-                    // clear the old text
-                    for (int i = 0; i < length; i++) {
-                        processAndroidKeyEvent(BACK_DOWN_EVENT);
-                        processAndroidKeyEvent(BACK_UP_EVENT);
-                    }
-                }
-            };
-        }
+        //         private void resetText(int length) {
+        //             // clear the old text
+        //             for (int i = 0; i < length; i++) {
+        //                 processAndroidKeyEvent(BACK_DOWN_EVENT);
+        //                 processAndroidKeyEvent(BACK_UP_EVENT);
+        //             }
+        //         }
+        //     };
+        // }
 
         @Override
         public boolean dispatchKeyEvent(final KeyEvent event) {
