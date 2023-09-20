@@ -64,7 +64,7 @@ public class IosTargetConfiguration extends DarwinTargetConfiguration {
     private static final String javafxWebLib = "webview";
 
     private static final List<String> iosFrameworks = Arrays.asList(
-            "Foundation", "UIKit", "CoreGraphics", "MobileCoreServices",
+            "Foundation", "UIKit", "QuickLook", "CoreGraphics", "MobileCoreServices",
             "OpenGLES", "CoreText", "QuartzCore", "ImageIO",
             "CoreBluetooth", "CoreImage", "CoreLocation", "CoreMedia", "CoreMotion", "CoreVideo",
             "Accelerate", "AVFoundation", "AudioToolbox", "MediaPlayer", "UserNotifications",
