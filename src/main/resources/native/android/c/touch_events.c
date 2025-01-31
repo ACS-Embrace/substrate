@@ -67,8 +67,8 @@ JNIEXPORT void JNICALL Java_com_gluonhq_helloandroid_MainActivity_nativeDispatch
     androidJfx_gotKeyEvent(action, keyCode, kars, cc, modifiers);
 }
 
-JNIEXPORT void JNICALL Java_com_gluonhq_helloandroid_MainActivity_nativeNotifyMenu(JNIEnv *env, jobject activity, jint x, jint y, jint xAbs, jint yAbs, jboolean isKeyboardTrigger)
-{
-//    LOGE(stderr, "Native Dalvik layer got notify menu, pass to native Graal layer...");
-    androidJfx_gotMenuEvent(x, y, xAbs, yAbs, isKeyboardTrigger);
-}
+// JNIEXPORT void JNICALL Java_com_gluonhq_helloandroid_MainActivity_nativeNotifyMenu(JNIEnv *env, jobject activity, jint x, jint y, jint xAbs, jint yAbs, jboolean isKeyboardTrigger)
+// {
+// //    LOGE(stderr, "Native Dalvik layer got notify menu, pass to native Graal layer...");
+//     androidJfx_gotMenuEvent(x, y, xAbs, yAbs, isKeyboardTrigger);
+// }
