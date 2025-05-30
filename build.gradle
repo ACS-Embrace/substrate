@@ -14,13 +14,13 @@ sourceCompatibility = JavaVersion.VERSION_11
 repositories {
     mavenCentral()
 
-    maven {
-        url repsyUrl
-        credentials {
-            username repsyUsername
-            password repsyPassword
-        }
-    }
+//    maven {
+//        url repsyUrl
+//        credentials {
+//            username repsyUsername
+//            password repsyPassword
+//        }
+//    }
 }
 
 test {
