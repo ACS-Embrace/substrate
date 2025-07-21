@@ -221,7 +221,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback,
     private native void nativeDispatchKeyEvent(int type, int key, char[] chars, int charCount, int modifiers);
     private native void nativeDispatchLifecycleEvent(String event);
     private native void nativeDispatchActivityResult(int requestCode, int resultCode, Intent intent);
-    private native void nativeNotifyMenu(int x, int y, int xAbs, int yAbs, boolean isKeyboardTrigger);
+//    private native void nativeNotifyMenu(int x, int y, int xAbs, int yAbs, boolean isKeyboardTrigger);
 
     class InternalSurfaceView extends SurfaceView {
         private static final int ACTION_POINTER_STILL = -1;
@@ -418,7 +418,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback,
             @Override
             public void run() {
                 Log.d(TAG, "Long press!");
-                nativeNotifyMenu(x, y, x, y, false);
+//                nativeNotifyMenu(x, y, x, y, false);
             }
         }
 
