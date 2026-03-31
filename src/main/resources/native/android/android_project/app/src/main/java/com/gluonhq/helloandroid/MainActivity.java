@@ -58,7 +58,6 @@ import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.FrameLayout;
 
-import androidx.core.view.WindowCompat;
 
 import java.util.TimeZone;
 import javafx.scene.input.KeyCode;
@@ -98,12 +97,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback,
         setContentView(mViewGroup);
         instance = this;
 
-        // Enable edge-to-edge display, extending the app to the full extension of the screen.
-        // The system bars are now on top of the application, and necessary padding should be
-        // applied to the top (AppBar) and bottom, to avoid overlaps.
-        // The DisplayService in Attach can be used to track the insets of the system bars
-        // and the StatusBarService can be used to set a dark or light appearance of the status bar
-        WindowCompat.enableEdgeToEdge(getWindow());
+        // Edge-to-edge display is disabled for now — enabling it causes the status bar to
+        // overlap the EmbraceDesktop UI. To re-enable, the app would need to handle window
+        // insets (via DisplayService) and apply appropriate padding to avoid the overlap.
+        // WindowCompat.enableEdgeToEdge(getWindow());
 
         imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
         Log.v(TAG, "onCreate done");
