@@ -88,7 +88,7 @@ public class AndroidTargetConfiguration extends PosixTargetConfiguration {
     private final List<String> cFlags = new ArrayList<>(Arrays.asList("-target", ANDROID_TRIPLET, "-I.", "-fPIC"));
     private final List<String> linkFlags = Arrays.asList("-target",
             ANDROID_TRIPLET + ANDROID_MIN_SDK_VERSION, "-fPIC",
-            "-Wl,--rosegment,--gc-sections,-z,noexecstack", "-shared",
+            "-Wl,--rosegment,--gc-sections,-z,noexecstack,-z,max-page-size=16384", "-shared",
             "-landroid", "-llog", "-lffi", "-llibchelper", "-static-libstdc++");
     private final List<String> javafxLinkFlags = new ArrayList<>(Arrays.asList(WL_WHOLE_ARCHIVE,
             "-lprism_es2_monocle", "-lglass_monocle", "-ljavafx_font_freetype", "-ljavafx_iio", WL_NO_WHOLE_ARCHIVE,

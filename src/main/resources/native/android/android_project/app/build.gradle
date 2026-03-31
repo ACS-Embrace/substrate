@@ -53,4 +53,11 @@ android {
             signingConfig signingConfigs.release
         }
     }
+
+    packagingOptions {
+        jniLibs {
+            // Required for 16KB memory page alignment (Android 15 / API 35 compliance)
+            useLegacyPackaging = false
+        }
+    }
 }

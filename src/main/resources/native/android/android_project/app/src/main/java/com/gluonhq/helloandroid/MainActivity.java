@@ -230,7 +230,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback,
     private native void nativeDispatchKeyEvent(int type, int key, char[] chars, int charCount, int modifiers);
     private native void nativeDispatchLifecycleEvent(String event);
     private native void nativeDispatchActivityResult(int requestCode, int resultCode, Intent intent);
-//    private native void nativeNotifyMenu(int x, int y, int xAbs, int yAbs, boolean isKeyboardTrigger);
+    private native void nativeNotifyMenu(int x, int y, int xAbs, int yAbs, boolean isKeyboardTrigger);
 
     class InternalSurfaceView extends SurfaceView {
         private static final int ACTION_POINTER_STILL = -1;
@@ -303,8 +303,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback,
         @Override
         public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
             Log.d(TAG, "onCreateInputConnection");
-            // Allows predictive text
-            outAttrs.inputType = InputType.TYPE_CLASS_TEXT;
+            // Use visible password variation to disable autocomplete and word prediction
+            // across all keyboards (Samsung/Microsoft Swift respect this even when they
+            // ignore TYPE_TEXT_FLAG_NO_SUGGESTIONS). Text still displays as plain text.
+            outAttrs.inputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD;
             // Remove top textfield editor on landscape
             outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI;
 
@@ -427,7 +429,12 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback,
             @Override
             public void run() {
                 Log.d(TAG, "Long press!");
-//                nativeNotifyMenu(x, y, x, y, false);
+                // nativeNotifyMenu(x, y, x, y, false);
+                // Disabled for now: context menu is handled by PressAndHoldContextMenu in the
+                // EmbraceDesktop project (JavaFX layer), which works on both Android and iOS.
+                // The iOS equivalent of this native mechanism has not been implemented, so using
+                // the JavaFX approach for uniformity across platforms. TODO: implement native
+                // long press context menu for iOS and re-enable this for Android.
             }
         }
 
