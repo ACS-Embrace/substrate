@@ -57,6 +57,7 @@ import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.FrameLayout;
+import android.widget.Toast;
 
 
 import java.util.TimeZone;
@@ -103,6 +104,17 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback,
         // WindowCompat.enableEdgeToEdge(getWindow());
 
         imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+
+        // Load the native library early so native methods (e.g. nativeDispatchActivityResult)
+        // are available before surfaceCreated fires. System.loadLibrary is idempotent —
+        // JNI_OnLoad is only invoked once regardless of how many times this is called.
+        try {
+            System.loadLibrary("substrate");
+            Log.v(TAG, "substrate library loaded in onCreate");
+        } catch (UnsatisfiedLinkError e) {
+            Log.w(TAG, "Could not load substrate library in onCreate — will retry in surfaceCreated", e);
+        }
+
         Log.v(TAG, "onCreate done");
     }
 
@@ -183,7 +195,16 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback,
     @Override
     public void onActivityResult(int requestCode, int resultCode, Intent intent) {
         Log.v(TAG, "onActivityResult with requestCode " + requestCode + " and resultCode = " + resultCode + " and intent = " + intent);
-        nativeDispatchActivityResult(requestCode, resultCode, intent);
+        try {
+            nativeDispatchActivityResult(requestCode, resultCode, intent);
+        } catch (UnsatisfiedLinkError e) {
+            Log.e(TAG, "nativeDispatchActivityResult not available — substrate may not be initialised yet or native library failed to load. requestCode=" + requestCode, e);
+            try {
+                Toast.makeText(this, "An error occurred. Please try again or restart the app.", Toast.LENGTH_LONG).show();
+            } catch (Exception toastException) {
+                Log.e(TAG, "Could not show error toast", toastException);
+            }
+        }
     }
 
     static MainActivity getInstance() {
