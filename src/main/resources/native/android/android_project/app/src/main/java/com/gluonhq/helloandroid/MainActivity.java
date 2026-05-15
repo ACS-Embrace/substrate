@@ -49,6 +49,7 @@ import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.ViewConfiguration;
+import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
@@ -58,6 +59,11 @@ import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.FrameLayout;
 import android.widget.Toast;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
 
 
 import java.util.TimeZone;
@@ -76,6 +82,9 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback,
 
     boolean graalStarted = false;
 
+    // Static so it survives Activity recreation caused by the permission dialog itself.
+    private static boolean sNotificationPermissionRequested = false;
+
     private static InputMethodManager imm;
 
     @Override
@@ -91,17 +100,75 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback,
         getWindow().setFormat(PixelFormat.RGBA_8888);
 
 
+        WindowCompat.enableEdgeToEdge(getWindow());
+        // enableEdgeToEdge sets the DecorView background to the theme's colorSurface (near-white).
+        // Override to black so any area not covered by our content shows black, not white.
+        getWindow().getDecorView().setBackgroundColor(android.graphics.Color.BLACK);
+
         mView = new InternalSurfaceView(this);
         mView.getHolder().addCallback(this);
         mViewGroup = new FrameLayout(this);
         mViewGroup.addView(mView);
+        // Black overlay covering the nav bar area. Window Views sit above the SurfaceView
+        // in z-order, so this appears on top of JavaFX content and makes the nav bar
+        // look black (matching the status bar). Height is set in the inset listener below.
+        View navBarOverlay = new View(this);
+        navBarOverlay.setBackgroundColor(android.graphics.Color.BLACK);
+        mViewGroup.addView(navBarOverlay, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, android.view.Gravity.BOTTOM));
         setContentView(mViewGroup);
         instance = this;
 
-        // Edge-to-edge display is disabled for now — enabling it causes the status bar to
-        // overlap the EmbraceDesktop UI. To re-enable, the app would need to handle window
-        // insets (via DisplayService) and apply appropriate padding to avoid the overlap.
-        // WindowCompat.enableEdgeToEdge(getWindow());
+        mViewGroup.setBackgroundColor(android.graphics.Color.BLACK);
+        WindowInsetsControllerCompat insetsController = WindowCompat.getInsetsController(getWindow(), mViewGroup);
+        insetsController.setAppearanceLightStatusBars(false);
+        insetsController.setAppearanceLightNavigationBars(false);
+
+        // On API 35, ContentFrameLayout (android.R.id.content) auto-applies system bar padding,
+        // which creates a gap at the bottom. Intercept there: explicitly zero its padding on
+        // every inset pass (covers padding applied before this listener was registered and
+        // Samsung vendor paths that bypass onApplyWindowInsets), then dispatch insets to
+        // children directly. Also set background to black so any residual gap isn't white.
+        View contentFrame = getWindow().getDecorView().findViewById(android.R.id.content);
+        if (contentFrame instanceof ViewGroup) {
+            ViewGroup contentFrameVg = (ViewGroup) contentFrame;
+            contentFrameVg.setBackgroundColor(android.graphics.Color.BLACK);
+            ViewCompat.setOnApplyWindowInsetsListener(contentFrame, (v, insets) -> {
+                v.setPadding(0, 0, 0, 0);
+                Log.v(TAG, "contentFrame insets: zeroed padding, navB=" + insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom + " statusT=" + insets.getInsets(WindowInsetsCompat.Type.statusBars()).top);
+                for (int i = 0; i < contentFrameVg.getChildCount(); i++) {
+                    ViewCompat.dispatchApplyWindowInsets(contentFrameVg.getChildAt(i), insets);
+                }
+                return WindowInsetsCompat.CONSUMED;
+            });
+        }
+
+        ViewCompat.setOnApplyWindowInsetsListener(mViewGroup, (v, insets) -> {
+            Insets statusBars = insets.getInsets(WindowInsetsCompat.Type.statusBars());
+            Insets navBars = insets.getInsets(WindowInsetsCompat.Type.navigationBars());
+            Insets cutout = insets.getInsets(WindowInsetsCompat.Type.displayCutout());
+            // Left/right nav bar insets (landscape) are handled via padding so mViewGroup's
+            // black background fills that area. Bottom nav bar (portrait) is covered by navBarOverlay.
+            // Display cutout (camera notch/punch-hole) is folded in per-side using max: when the
+            // cutout overlaps a side already padded for a nav bar the larger value wins; when the
+            // cutout is on an otherwise-unpadded side (e.g. left in landscape) it supplies the
+            // required safe-area margin on its own.
+            int padLeft  = Math.max(statusBars.left  + navBars.left,  cutout.left);
+            int padTop   = Math.max(statusBars.top,                   cutout.top);
+            int padRight = Math.max(statusBars.right + navBars.right, cutout.right);
+            v.setPadding(padLeft, padTop, padRight, 0);
+            FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) navBarOverlay.getLayoutParams();
+            lp.height = navBars.bottom;
+            navBarOverlay.setLayoutParams(lp);
+            Log.v(TAG, "mViewGroup insets: padTop=" + padTop + " navB=" + navBars.bottom
+                    + " navL=" + navBars.left + " navR=" + navBars.right
+                    + " cutL=" + cutout.left + " cutR=" + cutout.right + " cutT=" + cutout.top);
+            return WindowInsetsCompat.CONSUMED;
+        });
+
+        // Request a fresh inset dispatch so our listeners fire for the initial window layout,
+        // not just for subsequent inset changes (keyboard, rotation, etc.).
+        ViewCompat.requestApplyInsets(mViewGroup);
 
         imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
 
@@ -116,6 +183,37 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback,
         }
 
         Log.v(TAG, "onCreate done");
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        Log.v(TAG, "onWindowFocusChanged: hasFocus=" + hasFocus
+                + " mViewGroup=" + (mViewGroup != null ? mViewGroup.getPaddingBottom() + "b/" + mViewGroup.getPaddingTop() + "t" : "null"));
+        if (hasFocus) {
+            // The framework may reset the DecorView window background to the theme's
+            // colorSurface (near-white) after onCreate.  Re-apply via the Window API
+            // (same path as the framework) so the override sticks.
+            getWindow().setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(android.graphics.Color.BLACK));
+            View contentFrame = getWindow().getDecorView().findViewById(android.R.id.content);
+            if (contentFrame != null) {
+                contentFrame.setPadding(0, 0, 0, 0);
+                Log.v(TAG, "onWindowFocusChanged: contentFrame padB=" + contentFrame.getPaddingBottom());
+            }
+            // Do NOT call requestApplyInsets here — it triggers a full layout pass that
+            // can resize the SurfaceView after JavaFX has already started rendering.
+        }
+    }
+
+    @Override
+    public void onConfigurationChanged(android.content.res.Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        // Re-request insets on orientation change so the mViewGroup padding and navBarOverlay
+        // are updated for the new screen geometry. Android does not always re-dispatch insets
+        // automatically when the Activity handles configChanges itself without recreating.
+        if (mViewGroup != null) {
+            ViewCompat.requestApplyInsets(mViewGroup);
+        }
     }
 
     @Override
@@ -155,6 +253,22 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback,
             t.start();
             graalStarted = true;
             Log.v(TAG, "graalStarted true");
+            // Request POST_NOTIFICATIONS permission after a delay so the JavaFX
+            // QuantumRenderer is fully initialised before the permission dialog
+            // could briefly disrupt the surface.
+            new Handler().postDelayed(new Runnable() {
+                @Override public void run() {
+                    if (!sNotificationPermissionRequested && Build.VERSION.SDK_INT >= 33) {
+                        sNotificationPermissionRequested = true;
+                        if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                                != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                            requestPermissions(
+                                    new String[]{android.Manifest.permission.POST_NOTIFICATIONS},
+                                    1001);
+                        }
+                    }
+                }
+            }, 1500);
         }
         Log.v(TAG, "surfaceCreated done");
     }
@@ -471,6 +585,12 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback,
         Log.v(TAG, "onPause");
         super.onPause();
         notifyLifecycleEvent("pause");
+        // NOTE: do NOT call nativeSetSurface(null) here.
+        // onPause fires for ANY Android overlay (permission dialogs, file pickers, etc.)
+        // that don't destroy the surface. If we clear the Glass window cache here, and
+        // onResume fires without a matching surfaceCreated (because the surface was never
+        // destroyed), Glass stays broken permanently. Surface lifecycle is handled exclusively
+        // by surfaceCreated / surfaceDestroyed callbacks.
     }
 
     @Override
