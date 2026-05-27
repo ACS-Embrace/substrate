@@ -27,7 +27,30 @@
  */
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
+#include <time.h>
+#include <EGL/egl.h>
 #include "grandroid.h"
+
+// 1 while a valid EGL surface exists, 0 after nativeSetSurface(null).
+// Prevents the Adreno EGL spin-loop: on Snapdragon devices the JavaFX render
+// thread keeps calling eglSwapBuffers after surface destruction, causing the
+// Adreno GPU driver to SIGKILL the process (~497-1026 EGL_BAD_SURFACE errors/s).
+static atomic_int egl_surface_valid = ATOMIC_VAR_INIT(0);
+
+// Resolved by the --wrap linker mechanism to the real libEGL eglSwapBuffers.
+extern EGLBoolean __real_eglSwapBuffers(EGLDisplay dpy, EGLSurface surface);
+
+// Intercepts all eglSwapBuffers calls in the linked binary (including the
+// pre-built JavaFX static SDK) via -Wl,--wrap=eglSwapBuffers.
+EGLBoolean __wrap_eglSwapBuffers(EGLDisplay dpy, EGLSurface surface) {
+    if (!atomic_load_explicit(&egl_surface_valid, memory_order_acquire)) {
+        struct timespec ts = {0, 16000000L};
+        nanosleep(&ts, NULL);
+        return EGL_FALSE;
+    }
+    return __real_eglSwapBuffers(dpy, surface);
+}
 
 #ifdef JAVAFX_WEB
 jclass nativeWebViewClass;
@@ -73,8 +96,10 @@ JNIEXPORT void JNICALL Java_com_gluonhq_helloandroid_MainActivity_nativeSetSurfa
     if (surface != NULL) {
         window = ANativeWindow_fromSurface(env, surface);
         androidJfx_setNativeWindow(window);
+        atomic_store_explicit(&egl_surface_valid, 1, memory_order_release);
         LOGE(stderr, "native setSurface Ready, native window at %p\n", window);
     } else {
+        atomic_store_explicit(&egl_surface_valid, 0, memory_order_release);
         androidJfx_setNativeWindow(NULL);
         LOGE(stderr, "native setSurface was null");
     }

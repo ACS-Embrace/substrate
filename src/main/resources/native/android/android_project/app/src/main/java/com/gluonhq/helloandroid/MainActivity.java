@@ -31,6 +31,9 @@ import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.PixelFormat;
+import android.net.Uri;
+import android.os.Environment;
+import android.provider.DocumentsContract;
 import android.graphics.Rect;
 import android.os.Build;
 import android.os.Bundle;
@@ -80,7 +83,17 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback,
 
     private static final String TAG     = "GraalActivity";
 
-    boolean graalStarted = false;
+    // static so it survives Activity recreation within the same process (config change, etc.)
+    // — GraalVM runs in a process-level thread, not an Activity-level one.
+    private static volatile boolean graalStarted = false;
+
+    // True between surfaceCreated and surfaceDestroyed.
+    private volatile boolean graalSurfaceReady = false;
+    // True between onResume and onPause. Set false before notifyLifecycleEvent("pause")
+    // so that any batched touch/key events drained by Choreographer after onPause cannot
+    // reach the GraalVM JNI layer while it is tearing down — on Android 16 this race
+    // causes a crash in JNIJavaCallTrampoline (VK_ERROR_SURFACE_LOST_KHR path).
+    private volatile boolean activityActive = false;
 
     // Static so it survives Activity recreation caused by the permission dialog itself.
     private static boolean sNotificationPermissionRequested = false;
@@ -270,6 +283,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback,
                 }
             }, 1500);
         }
+        graalSurfaceReady = true;
         Log.v(TAG, "surfaceCreated done");
     }
 
@@ -289,6 +303,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback,
     @Override
     public void surfaceDestroyed(SurfaceHolder holder) {
         System.err.println("[MainGraalActivity] surfaceDestroyed");
+        graalSurfaceReady = false;
         nativeSetSurface(null);
     }
 
@@ -309,8 +324,42 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback,
     @Override
     public void onActivityResult(int requestCode, int resultCode, Intent intent) {
         Log.v(TAG, "onActivityResult with requestCode " + requestCode + " and resultCode = " + resultCode + " and intent = " + intent);
+        if (!graalStarted) {
+            // GraalVM not yet initialized (cold-start: Android re-delivered a pending activity
+            // result to this fresh process before surfaceCreated). Dispatching now would cause a
+            // JNI abort — GraalVM's native method bindings are not ready and the JNI object
+            // reference is null. Instead: persist the URI permission cross-process and write the
+            // resolved path to a file that SettingsController reads on startup, so the download
+            // location is applied before the "choose folder" popup is shown — no second click.
+            Log.w(TAG, "onActivityResult arrived before GraalVM initialized (cold-start) — persisting result for next startup");
+            if (resultCode == RESULT_OK && intent != null && intent.getData() != null) {
+                try {
+                    Uri uri = intent.getData();
+                    int takeFlags = intent.getFlags()
+                            & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                    getContentResolver().takePersistableUriPermission(uri, takeFlags);
+                    String path = resolveDocumentTreeUri(uri);
+                    if (path != null) {
+                        java.io.File pendingFile = new java.io.File(getFilesDir(), "pending_download_path.txt");
+                        try (java.io.FileWriter fw = new java.io.FileWriter(pendingFile)) {
+                            fw.write(path);
+                        }
+                        Log.v(TAG, "Saved pending download path for next startup: " + path);
+                    } else {
+                        Log.w(TAG, "Could not resolve cold-start folder URI to a path — user will need to pick again");
+                    }
+                } catch (Exception e) {
+                    Log.e(TAG, "Could not persist cold-start folder result", e);
+                }
+            }
+            return;
+        }
         try {
-            nativeDispatchActivityResult(requestCode, resultCode, intent);
+            // GraalVM's nativeDispatchActivityResult does not null-check the Intent before
+            // calling methods on it. A cancelled file/document picker returns null here,
+            // causing a JNI abort. Substitute an empty Intent so GraalVM receives the
+            // resultCode (RESULT_CANCELED) without an NPE on the Intent object.
+            nativeDispatchActivityResult(requestCode, resultCode, intent != null ? intent : new Intent());
         } catch (UnsatisfiedLinkError e) {
             Log.e(TAG, "nativeDispatchActivityResult not available — substrate may not be initialised yet or native library failed to load. requestCode=" + requestCode, e);
             try {
@@ -363,6 +412,36 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback,
     private native void nativeDispatchLifecycleEvent(String event);
     private native void nativeDispatchActivityResult(int requestCode, int resultCode, Intent intent);
     private native void nativeNotifyMenu(int x, int y, int xAbs, int yAbs, boolean isKeyboardTrigger);
+
+    private String resolveDocumentTreeUri(Uri uri) {
+        if (uri == null) return null;
+        try {
+            String authority = uri.getAuthority();
+            boolean isKnown = "com.android.externalstorage.documents".equals(authority)
+                    || "com.samsung.android.externalstorage.documents".equals(authority);
+            if (!isKnown) {
+                Log.w(TAG, "resolveDocumentTreeUri: unrecognised authority " + authority);
+                return null;
+            }
+            String documentId = DocumentsContract.getTreeDocumentId(uri);
+            if (documentId == null || !documentId.contains(":")) return null;
+            String[] parts = documentId.split(":", 2);
+            String type = parts[0];
+            String rel  = parts.length > 1 ? parts[1] : "";
+            String base = Environment.getExternalStorageDirectory().getAbsolutePath();
+            if ("primary".equals(type)) {
+                return base + "/" + rel;
+            } else if ("home".equals(type)) {
+                // Samsung "home" maps to the Documents folder; rel may or may not include "Documents/"
+                return base + "/Documents/" + rel;
+            } else {
+                return "/storage/" + type + "/" + rel;
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "resolveDocumentTreeUri failed for " + uri, e);
+            return null;
+        }
+    }
 
     class InternalSurfaceView extends SurfaceView {
         private static final int ACTION_POINTER_STILL = -1;
@@ -427,6 +506,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback,
             if (!isFocused()) {
                 Log.v(TAG, "View wasn't focused, requesting focus");
                 requestFocus();
+            }
+            if (!graalSurfaceReady || !activityActive) {
+                Log.v(TAG, "dispatchTouchEvent suppressed: graalSurfaceReady=" + graalSurfaceReady + " activityActive=" + activityActive);
+                return true;
             }
             nativeGotTouchEvent(pcount, actions, ids, touchXs, touchYs);
             return true;
@@ -582,6 +665,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback,
 
     @Override
     protected void onPause() {
+        activityActive = false;
         Log.v(TAG, "onPause");
         super.onPause();
         notifyLifecycleEvent("pause");
@@ -598,6 +682,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback,
         Log.v(TAG, "onResume");
         super.onResume();
         notifyLifecycleEvent("resume");
+        activityActive = true;
         Log.v(TAG, "onResume done");
     }
 
@@ -636,6 +721,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback,
     private int deadKey = 0;
 
     void processAndroidKeyEvent (KeyEvent event) {
+        if (!graalSurfaceReady || !activityActive) {
+            Log.v(TAG, "processAndroidKeyEvent suppressed: graalSurfaceReady=" + graalSurfaceReady + " activityActive=" + activityActive);
+            return;
+        }
         int jfxModifiers = mapAndroidModifierToJfx(event.getMetaState());
         switch (event.getAction()) {
             case KeyEvent.ACTION_DOWN:
