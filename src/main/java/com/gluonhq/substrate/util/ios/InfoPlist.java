@@ -29,6 +29,7 @@ package com.gluonhq.substrate.util.ios;
 
 import com.dd.plist.NSArray;
 import com.dd.plist.NSDictionary;
+import com.dd.plist.NSObject;
 import com.dd.plist.NSString;
 import com.dd.plist.PropertyListParser;
 import com.gluonhq.substrate.Constants;
@@ -39,6 +40,7 @@ import com.gluonhq.substrate.model.ReleaseConfiguration;
 import com.gluonhq.substrate.util.FileOps;
 import com.gluonhq.substrate.util.Logger;
 import com.gluonhq.substrate.util.ProcessRunner;
+import com.gluonhq.substrate.util.Version;
 import com.gluonhq.substrate.util.XcodeUtils;
 import com.gluonhq.substrate.util.plist.NSDictionaryEx;
 
@@ -93,8 +95,7 @@ public class InfoPlist {
     private final Path partialPListDir;
 
     private Path tmpStoryboardsDir;
-    private String bundleId;
-    private String minOSVersion = Constants.DEFAULT_IOS_MIN_OS_VERSION;
+    private String minOSVersion;
 
     public InfoPlist(ProcessPaths paths, InternalProjectConfiguration projectConfiguration, XcodeUtils.SDKS sdk) throws IOException {
         this.paths = Objects.requireNonNull(paths);
@@ -128,6 +129,12 @@ public class InfoPlist {
             Logger.logInfo("Default iOS plist generated in " + genPlist.toString() + ".\n" +
                     "Consider copying it to " + rootPath.toString() + " before performing any modification");
         }
+
+        Path plist = getPlistPath(paths, sourceOS);
+        if (plist == null) {
+            throw new IOException("Error: plist not found");
+        }
+        minOSVersion = getMinimumOSVersion(plist);
 
         Path userAssets = rootPath.resolve(Constants.IOS_ASSETS_FOLDER);
         if (!Files.exists(userAssets) || !(Files.isDirectory(userAssets) && Files.list(userAssets).count() > 0)) {
@@ -164,11 +171,6 @@ public class InfoPlist {
             copyVerifyBase(userAssets.resolve("Base.lproj"));
             copyVerifyAssets(userAssets);
             copyOtherAssets(userAssets);
-        }
-
-        Path plist = getPlistPath(paths, sourceOS);
-        if (plist == null) {
-            throw new IOException("Error: plist not found");
         }
 
         Path executable = appPath.resolve(executableName);
@@ -215,7 +217,7 @@ public class InfoPlist {
             }
             dict.put("DTPlatformName", xcodeUtil.getPlatformName());
             dict.put("DTSDKName", xcodeUtil.getSDKName());
-            dict.put("MinimumOSVersion", Constants.DEFAULT_IOS_MIN_OS_VERSION);
+            dict.put("MinimumOSVersion", minOSVersion);
             dict.put("CFBundleSupportedPlatforms", new NSArray(new NSString(sdk.getSdkName())));
             dict.put("DTPlatformVersion", xcodeUtil.getPlatformVersion());
             dict.put("DTPlatformBuild", xcodeUtil.getPlatformBuild());
@@ -229,6 +231,7 @@ public class InfoPlist {
             dict.getKeySet().forEach(k -> orderedDict.put(k, dict.get(k)));
 
             if (partialPListDir != null) {
+                // Finally, add new key-values or overwrite existing keys from partial plist files
                 Files.walk(partialPListDir, 1)
                         .filter(p -> Files.isRegularFile(p) && p.toString().endsWith(".plist"))
                         .sorted((p1, p2) -> {
@@ -243,13 +246,19 @@ public class InfoPlist {
                         .forEach(path -> {
                             try {
                                 NSDictionary d = (NSDictionary) PropertyListParser.parse(path.toFile());
-                                d.keySet().forEach(k -> orderedDict.put(k, d.get(k)));
+                                d.keySet().forEach(k -> {
+                                    if (orderedDict.get(k) != null) {
+                                        Logger.logDebug("Overwriting key " + k + " with value: " + d.get(k));
+                                    }
+                                    orderedDict.put(k, d.get(k));
+                                });
                             } catch (Exception e) {
                                 Logger.logFatal(e, "Error parsing plist file: " + path);
                             }
                         });
             }
-            orderedDict.put("MinimumOSVersion", minOSVersion != null ? minOSVersion : Constants.DEFAULT_IOS_MIN_OS_VERSION);
+            // last, so a partial plist cannot lower it below the floor
+            orderedDict.put("MinimumOSVersion", minOSVersion);
 
             //             BinaryPropertyListWriter.write(new File(appDir, "Info.plist"), orderedDict);
             orderedDict.saveAsBinary(appPath.resolve("Info.plist"));
@@ -257,7 +266,6 @@ public class InfoPlist {
             orderedDict.getEntrySet().forEach(e -> {
                         if ("CFBundleIdentifier".equals(e.getKey())) {
                             Logger.logDebug("Bundle ID = "+e.getValue().toString());
-                            bundleId = e.getValue().toString();
                         }
                         Logger.logDebug("Info.plist Entry: " + e);
                     }
@@ -332,6 +340,40 @@ public class InfoPlist {
                 "Please check the src/ios/Default-info.plist file and make sure CFBundleIdentifier key exists");
     }
 
+    private String getMinimumOSVersion(Path plist) {
+        if (plist == null || !Files.exists(plist)) {
+            Logger.logDebug("Could not get MinimumOSVersion from non existent " + plist);
+            return Constants.DEFAULT_IOS_MIN_OS_VERSION;
+        }
+        try {
+            NSDictionaryEx dict = new NSDictionaryEx(plist.toFile());
+            NSObject value = dict.get("MinimumOSVersion");
+            if (value == null) {
+                Logger.logDebug("Could not find MinimumOSVersion in plist: " + plist);
+                return Constants.DEFAULT_IOS_MIN_OS_VERSION;
+            }
+            return getValidVersionOrMinimum(value.toString());
+        } catch (Exception ex) {
+            Logger.logDebug("Could not read MinimumOSVersion from " + plist + ": " + ex.getMessage());
+        }
+        return Constants.DEFAULT_IOS_MIN_OS_VERSION;
+    }
+
+    private String getValidVersionOrMinimum(String value) {
+        try {
+            Version version = new Version(value);
+            if (version.compareTo(new Version(Constants.DEFAULT_IOS_MIN_OS_VERSION)) < 0) {
+                Logger.logDebug("MinimumOSVersion " + version + " can't be lower than " + Constants.DEFAULT_IOS_MIN_OS_VERSION);
+                return Constants.DEFAULT_IOS_MIN_OS_VERSION;
+            }
+            Logger.logDebug("Using MinimumOSVersion: " + value);
+            return value;
+        } catch (NumberFormatException ex) {
+            Logger.logSevere("Invalid MinimumOSVersion value '" + value + "'. Using default: " + Constants.DEFAULT_IOS_MIN_OS_VERSION);
+        }
+        return Constants.DEFAULT_IOS_MIN_OS_VERSION;
+    }
+
     /**
      * Walks through the classes jar and other dependency jars files in the classpath,
      * and looks for META-INF/substrate/ios/Partial-Info.plist files.
@@ -370,9 +412,6 @@ public class InfoPlist {
     private void copyVerifyAssets(Path resourcePath) throws IOException {
         if (resourcePath == null || !Files.exists(resourcePath)) {
             throw new RuntimeException("Error: invalid path " + resourcePath);
-        }
-        if (minOSVersion == null) {
-            minOSVersion = Constants.DEFAULT_IOS_MIN_OS_VERSION;
         }
         Files.walk(resourcePath, 1).forEach(p -> {
             if (Files.isDirectory(p)) {
@@ -492,9 +531,6 @@ public class InfoPlist {
                     userPath.resolve("LaunchScreen.storyboard"));
             FileOps.copyResource("/native/ios/assets/Base.lproj/MainScreen.storyboard",
                     userPath.resolve("MainScreen.storyboard"));
-        }
-        if (minOSVersion == null) {
-            minOSVersion = Constants.DEFAULT_IOS_MIN_OS_VERSION;
         }
         tmpStoryboardsDir = tmpPath.resolve("storyboards");
         if (Files.exists(tmpStoryboardsDir)) {
