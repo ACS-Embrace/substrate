@@ -26,44 +26,122 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <stdlib.h>
+#include <string.h>
+#include <pthread.h>
 #include "jni.h"
 #include "bridge_webview.h"
 
-extern void substrate_showWebView();
-extern void substrate_loadUrl(char *c);
-extern void substrate_loadContent(char *c);
-extern void substrate_setWebViewX(double x);
-extern void substrate_setWebViewY(double y);
-extern void substrate_setWebViewWidth(double w);
-extern void substrate_setWebViewHeight(double h);
-extern void substrate_setWebViewVisible(jboolean visible);
-extern void substrate_reloadWebView();
-extern void substrate_removeWebView();
-extern char* substrate_executeScript(char *c);
+extern void substrate_createWebView(jlong handle);
+extern void substrate_loadUrl(jlong handle, char *c);
+extern void substrate_loadContent(jlong handle, char *c);
+extern void substrate_setWebViewX(jlong handle, double x);
+extern void substrate_setWebViewY(jlong handle, double y);
+extern void substrate_setWebViewWidth(jlong handle, double w);
+extern void substrate_setWebViewHeight(jlong handle, double h);
+extern void substrate_setWebViewVisible(jlong handle, jboolean visible);
+extern void substrate_reloadWebView(jlong handle);
+extern void substrate_removeWebView(jlong handle);
+extern char* substrate_executeScript(jlong handle, char *c);
 
-static jobject webViewObject;
-static jmethodID jmidLoadStarted;
-static jmethodID jmidLoadFinished;
-static jmethodID jmidLoadFailed;
-static jmethodID jmidJavaCall;
+/*
+ * Every javafx.scene.web.WebView instance registers itself here via _initWebView,
+ * which hands a unique handle back to the JavaFX side (nativeHandle[0]). The JavaFX
+ * WebView passes that handle into every subsequent native call, and the Dalvik side
+ * passes it back with every callback, so concurrent/overlapping WebView lifecycles
+ * (help window closed and reopened, JsonView + help coexisting) can no longer
+ * cross-talk. Slots hold a Graal-side global ref to the JavaFX WebView object,
+ * used to deliver the notifyLoad* callbacks to the right instance.
+ */
+#define MAX_WEBVIEWS 8
+
+typedef struct {
+    jlong   handle;      /* 0 = free slot */
+    jobject fxWebView;   /* Graal-side global ref to javafx.scene.web.WebView */
+} WebViewSlot;
+
+static WebViewSlot slots[MAX_WEBVIEWS];
+static jlong nextHandle = 1;
+static pthread_mutex_t slotsMutex = PTHREAD_MUTEX_INITIALIZER;
+
+static jmethodID jmidLoadStarted = NULL;
+static jmethodID jmidLoadFinished = NULL;
+static jmethodID jmidLoadFailed = NULL;
+static jmethodID jmidJavaCall = NULL;
 
 static JavaVM *jvm;
+
+static jclass graalAndroidWebViewEngineClass = NULL;
+static jmethodID jmidGetResourceBytes = NULL;
+static int resourceEngineLookupFailed = 0;
 
 JavaVM* getWebViewGraalVM() {
     return jvm;
 }
 
-static void initializeWebViewHandles(JNIEnv *env, jobject object) {
-    fprintf(stderr, "WebView, initializeWebViewHandles called\n");
-    webViewObject = (*env)->NewGlobalRef(env, object);
-    jclass webViewClass = (*env)->GetObjectClass(env, object);
+static int checkAndClearGraalException(JNIEnv *env, const char *where) {
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionDescribe(env);
+        (*env)->ExceptionClear(env);
+        fprintf(stderr, "WebView: Graal JNI exception in %s (cleared)\n", where);
+        return 1;
+    }
+    return 0;
+}
 
-    //webViewClass = (*env)->NewGlobalRef(env, (*env)->FindClass(env, "javafx/scene/web/WebView"));
+static jlong registerWebView(JNIEnv *env, jobject fxWebView) {
+    pthread_mutex_lock(&slotsMutex);
+    jlong handle = nextHandle++;
+    for (int i = 0; i < MAX_WEBVIEWS; i++) {
+        if (slots[i].handle == 0) {
+            slots[i].handle = handle;
+            slots[i].fxWebView = (*env)->NewGlobalRef(env, fxWebView);
+            pthread_mutex_unlock(&slotsMutex);
+            fprintf(stderr, "WebView: registered handle %lld in slot %d\n", (long long) handle, i);
+            return handle;
+        }
+    }
+    pthread_mutex_unlock(&slotsMutex);
+    fprintf(stderr, "WebView: slot table full, more than %d live WebViews\n", MAX_WEBVIEWS);
+    return 0;
+}
+
+static jobject fxWebViewForHandle(jlong handle) {
+    pthread_mutex_lock(&slotsMutex);
+    for (int i = 0; i < MAX_WEBVIEWS; i++) {
+        if (slots[i].handle == handle) {
+            jobject result = slots[i].fxWebView;
+            pthread_mutex_unlock(&slotsMutex);
+            return result;
+        }
+    }
+    pthread_mutex_unlock(&slotsMutex);
+    return NULL;
+}
+
+static void unregisterWebView(JNIEnv *env, jlong handle) {
+    pthread_mutex_lock(&slotsMutex);
+    for (int i = 0; i < MAX_WEBVIEWS; i++) {
+        if (slots[i].handle == handle) {
+            (*env)->DeleteGlobalRef(env, slots[i].fxWebView);
+            slots[i].fxWebView = NULL;
+            slots[i].handle = 0;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&slotsMutex);
+}
+
+static void initializeWebViewMethodIds(JNIEnv *env, jobject fxWebView) {
+    if (jmidLoadStarted != NULL) {
+        return;
+    }
+    jclass webViewClass = (*env)->GetObjectClass(env, fxWebView);
     jmidLoadStarted = (*env)->GetMethodID(env, webViewClass, "notifyLoadStarted", "()V");
     jmidLoadFinished = (*env)->GetMethodID(env, webViewClass, "notifyLoadFinished", "(Ljava/lang/String;Ljava/lang/String;)V");
     jmidLoadFailed = (*env)->GetMethodID(env, webViewClass, "notifyLoadFailed", "()V");
     jmidJavaCall = (*env)->GetMethodID(env, webViewClass, "notifyJavaCall", "(Ljava/lang/String;)V");
-    fprintf(stderr, "WebView, initializeWebViewHandles done\n");
+    checkAndClearGraalException(env, "initializeWebViewMethodIds");
 }
 
 jint JNI_OnLoad_webview(JavaVM *vm, void *reserved) {
@@ -77,69 +155,67 @@ jint JNI_OnLoad_webview(JavaVM *vm, void *reserved) {
 
 JNIEXPORT void JNICALL
     Java_javafx_scene_web_WebView__1initWebView(JNIEnv *env, jobject obj, jlongArray nativeHandle) {
-    initializeWebViewHandles(env, obj);
-    fprintf(stderr, "WebView, initWebView called\n");
-    substrate_showWebView();
-    fprintf(stderr, "WebView, initWebView done\n");
+    initializeWebViewMethodIds(env, obj);
+    jlong handle = registerWebView(env, obj);
+    /* The WebView constructor reads nativeHandle[0] immediately after this
+     * returns; it must be written synchronously. */
+    (*env)->SetLongArrayRegion(env, nativeHandle, 0, 1, &handle);
+    fprintf(stderr, "WebView, initWebView handle %lld\n", (long long) handle);
+    substrate_createWebView(handle);
 }
 
 JNIEXPORT void JNICALL
     Java_javafx_scene_web_WebEngine__1loadUrl(JNIEnv *env, jobject cl, jlong handle, jstring str) {
-    fprintf(stderr, "WebView, loadurl calling\n");
     char *curl = (char *)(*env)->GetStringUTFChars(env, str, JNI_FALSE);
-    substrate_loadUrl(curl);
+    substrate_loadUrl(handle, curl);
     (*env)->ReleaseStringUTFChars(env, str, curl);
-    fprintf(stderr, "WebView, loadurl calling done\n");
 }
 
 JNIEXPORT jstring JNICALL
     Java_javafx_scene_web_WebEngine__1executeScript(JNIEnv *env, jobject cl, jlong handle, jstring script) {
-    fprintf(stderr, "WebView, executeScript calling\n");
     char *cscript = (char *)(*env)->GetStringUTFChars(env, script, JNI_FALSE);
-    char *result = substrate_executeScript(cscript);
+    char *result = substrate_executeScript(handle, cscript);
     (*env)->ReleaseStringUTFChars(env, script, cscript);
+    if (result == NULL) {
+        return NULL;
+    }
     jstring jresult = (*env)->NewStringUTF(env, result);
-    fprintf(stderr, "WebView, executeScript calling done with result %s\n", result);
+    free(result);
     return jresult;
 }
 
 JNIEXPORT void JNICALL
     Java_javafx_scene_web_WebEngine__1loadContent(JNIEnv *env, jobject cl, jlong handle, jstring content) {
-    fprintf(stderr, "WebView, loadContent calling\n");
-    char *curl = (char *)(*env)->GetStringUTFChars(env, content, JNI_FALSE);
-    substrate_loadContent(curl);
-    (*env)->ReleaseStringUTFChars(env, content, curl);
-    fprintf(stderr, "WebView, loadContentcalling done\n");
+    char *ccontent = (char *)(*env)->GetStringUTFChars(env, content, JNI_FALSE);
+    substrate_loadContent(handle, ccontent);
+    (*env)->ReleaseStringUTFChars(env, content, ccontent);
 }
 
 JNIEXPORT void JNICALL
     Java_javafx_scene_web_WebEngine__1reload(JNIEnv *env, jobject cl, jlong handle) {
-    fprintf(stderr, "WebView, reload called\n");
-    substrate_reloadWebView();
+    substrate_reloadWebView(handle);
 }
 
 JNIEXPORT void JNICALL
     Java_javafx_scene_web_WebView__1setWidth(JNIEnv *env, jobject cl, jlong handle, jdouble w) {
-    fprintf(stderr, "WebView, setwidth called\n");
-    substrate_setWebViewWidth(w);
+    substrate_setWebViewWidth(handle, w);
 }
 
 JNIEXPORT void JNICALL
     Java_javafx_scene_web_WebView__1setHeight(JNIEnv *env, jobject cl, jlong handle, jdouble h) {
-    fprintf(stderr, "WebView, setheight called\n");
-    substrate_setWebViewHeight(h);
+    substrate_setWebViewHeight(handle, h);
 }
 
 JNIEXPORT void JNICALL
     Java_javafx_scene_web_WebView__1setVisible(JNIEnv *env, jobject cl, jlong handle, jboolean v) {
-    fprintf(stderr, "WebView, setvisible called\n");
-    substrate_setWebViewVisible(v);
+    substrate_setWebViewVisible(handle, v);
 }
 
 JNIEXPORT void JNICALL
     Java_javafx_scene_web_WebView__1removeWebView(JNIEnv *env, jobject cl, jlong handle) {
-    fprintf(stderr, "WebView, removeWebView called\n");
-    substrate_removeWebView();
+    fprintf(stderr, "WebView, removeWebView handle %lld\n", (long long) handle);
+    substrate_removeWebView(handle);
+    unregisterWebView(env, handle);
 }
 
 JNIEXPORT void JNICALL
@@ -147,41 +223,113 @@ JNIEXPORT void JNICALL
         jdouble mxx, jdouble mxy, jdouble mxz, jdouble mxt,
         jdouble myx, jdouble myy, jdouble myz, jdouble myt,
         jdouble mzx, jdouble mzy, jdouble mzz, jdouble mzt) {
-    fprintf(stderr, "WebView, setTransform called %f %f %f %f\n", mxt, myt, mxx, myy);
-    substrate_setWebViewX(mxt);
-    substrate_setWebViewY(myt);
+    /* Only the translation components of the node-to-scene transform are
+     * consumed; the WebView must not sit inside scaled/rotated ancestors. */
+    substrate_setWebViewX(handle, mxt);
+    substrate_setWebViewY(handle, myt);
 }
 
-void androidJfx_startURL(const char *url) {
+void androidJfx_startURL(jlong handle, const char *url) {
     ATTACH_GRAAL();
-    fprintf(stderr, "WebView, androidJfx_startURL %s\n", url);
-    (*graalEnv)->CallVoidMethod(graalEnv, webViewObject, jmidLoadStarted);
+    jobject fxWebView = fxWebViewForHandle(handle);
+    if (fxWebView != NULL) {
+        (*graalEnv)->CallVoidMethod(graalEnv, fxWebView, jmidLoadStarted);
+        checkAndClearGraalException(graalEnv, "androidJfx_startURL");
+    }
     DETACH_GRAAL();
 }
 
-void androidJfx_finishURL(const char *url, const char *html) {
-    fprintf(stderr, "WebView, androidJfx_finishURL %s\n", url);
+void androidJfx_finishURL(jlong handle, const char *url, const char *html) {
     ATTACH_GRAAL();
-    jstring jurl = (*graalEnv)->NewStringUTF(graalEnv, url);
-    jstring jhtml = (*graalEnv)->NewStringUTF(graalEnv, html);
-    (*graalEnv)->CallVoidMethod(graalEnv, webViewObject, jmidLoadFinished, jurl, jhtml);
-    (*graalEnv)->ReleaseStringUTFChars(graalEnv, url, jurl);
-    (*graalEnv)->ReleaseStringUTFChars(graalEnv, html, jhtml);
+    jobject fxWebView = fxWebViewForHandle(handle);
+    if (fxWebView != NULL) {
+        jstring jurl = (*graalEnv)->NewStringUTF(graalEnv, url);
+        jstring jhtml = (*graalEnv)->NewStringUTF(graalEnv, html);
+        (*graalEnv)->CallVoidMethod(graalEnv, fxWebView, jmidLoadFinished, jurl, jhtml);
+        checkAndClearGraalException(graalEnv, "androidJfx_finishURL");
+        (*graalEnv)->DeleteLocalRef(graalEnv, jurl);
+        (*graalEnv)->DeleteLocalRef(graalEnv, jhtml);
+    }
     DETACH_GRAAL();
 }
 
-void androidJfx_failedURL(const char *url) {
+void androidJfx_failedURL(jlong handle, const char *url) {
     ATTACH_GRAAL();
-    fprintf(stderr, "WebView, androidJfx_failedURL %s\n", url);
-    (*graalEnv)->CallVoidMethod(graalEnv, webViewObject, jmidLoadFailed);
+    jobject fxWebView = fxWebViewForHandle(handle);
+    if (fxWebView != NULL) {
+        (*graalEnv)->CallVoidMethod(graalEnv, fxWebView, jmidLoadFailed);
+        checkAndClearGraalException(graalEnv, "androidJfx_failedURL");
+    }
     DETACH_GRAAL();
 }
 
-void androidJfx_javaCallURL(const char *url) {
+void androidJfx_javaCallURL(jlong handle, const char *url) {
     ATTACH_GRAAL();
-    jstring jurl = (*graalEnv)->NewStringUTF(graalEnv, url);
-    fprintf(stderr, "WebView, androidJfx_javaCallURL %s\n", url);
-    (*graalEnv)->CallVoidMethod(graalEnv, webViewObject, jmidJavaCall, jurl);
-    (*graalEnv)->ReleaseStringUTFChars(graalEnv, url, jurl);
+    jobject fxWebView = fxWebViewForHandle(handle);
+    if (fxWebView != NULL) {
+        jstring jurl = (*graalEnv)->NewStringUTF(graalEnv, url);
+        (*graalEnv)->CallVoidMethod(graalEnv, fxWebView, jmidJavaCall, jurl);
+        checkAndClearGraalException(graalEnv, "androidJfx_javaCallURL");
+        (*graalEnv)->DeleteLocalRef(graalEnv, jurl);
+    }
     DETACH_GRAAL();
+}
+
+char* substrate_loadResourceBytes(const char *path, int *outLength) {
+    ATTACH_GRAAL();
+    *outLength = 0;
+    if (graalAndroidWebViewEngineClass == NULL && !resourceEngineLookupFailed) {
+        jclass cls = (*graalEnv)->FindClass(graalEnv, "za/co/embrace/desktop/utilities/provided/AndroidWebViewEngine");
+        if (checkAndClearGraalException(graalEnv, "loadResourceBytes:FindClass") || cls == NULL) {
+            /* Class not present or not registered for JNI in the native image
+             * (needs a jni-config entry). Fail once, loudly, and don't retry. */
+            fprintf(stderr, "WebView: AndroidWebViewEngine not found; resource: URLs will not be served\n");
+            resourceEngineLookupFailed = 1;
+        } else {
+            graalAndroidWebViewEngineClass = (jclass)(*graalEnv)->NewGlobalRef(graalEnv, cls);
+            jmidGetResourceBytes = (*graalEnv)->GetStaticMethodID(graalEnv, graalAndroidWebViewEngineClass,
+                    "getResourceBytes", "(Ljava/lang/String;)[B");
+            if (checkAndClearGraalException(graalEnv, "loadResourceBytes:GetStaticMethodID") || jmidGetResourceBytes == NULL) {
+                resourceEngineLookupFailed = 1;
+            }
+        }
+    }
+    if (resourceEngineLookupFailed) {
+        DETACH_GRAAL();
+        return NULL;
+    }
+    jstring jpath = (*graalEnv)->NewStringUTF(graalEnv, path);
+    jbyteArray jdata = (jbyteArray)(*graalEnv)->CallStaticObjectMethod(graalEnv, graalAndroidWebViewEngineClass, jmidGetResourceBytes, jpath);
+    checkAndClearGraalException(graalEnv, "loadResourceBytes:getResourceBytes");
+    (*graalEnv)->DeleteLocalRef(graalEnv, jpath);
+    char *result = NULL;
+    if (jdata != NULL) {
+        jsize length = (*graalEnv)->GetArrayLength(graalEnv, jdata);
+        *outLength = (int)length;
+        result = (char*)malloc(length);
+        if (result != NULL) {
+            (*graalEnv)->GetByteArrayRegion(graalEnv, jdata, 0, length, (jbyte*)result);
+        } else {
+            *outLength = 0;
+        }
+    }
+    DETACH_GRAAL();
+    return result;
+}
+
+JNIEXPORT jbyteArray JNICALL
+    Java_com_gluonhq_helloandroid_NativeWebView_loadResourceBytes(JNIEnv *env, jobject obj, jstring jpath) {
+    const char *path = (*env)->GetStringUTFChars(env, jpath, JNI_FALSE);
+    int length = 0;
+    char *data = substrate_loadResourceBytes(path, &length);
+    (*env)->ReleaseStringUTFChars(env, jpath, path);
+    if (data == NULL) {
+        return NULL;
+    }
+    jbyteArray result = (*env)->NewByteArray(env, length);
+    if (result != NULL) {
+        (*env)->SetByteArrayRegion(env, result, 0, length, (jbyte*)data);
+    }
+    free(data);
+    return result;
 }

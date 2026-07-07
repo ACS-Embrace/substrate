@@ -27,13 +27,14 @@
  */
 package com.gluonhq.helloandroid;
 
+import android.content.pm.ApplicationInfo;
 import android.graphics.Bitmap;
 import android.os.Build;
+import android.os.Looper;
 import androidx.annotation.RequiresApi;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.View;
-import android.view.ViewGroup;
 import android.widget.FrameLayout;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
@@ -44,249 +45,365 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 
-import java.io.StringReader;
-import java.util.Properties;
-import java.util.concurrent.CountDownLatch;
+import org.json.JSONException;
+import org.json.JSONObject;
+import org.json.JSONTokener;
 
+import java.io.ByteArrayInputStream;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+
+/**
+ * Dalvik-side peer of one javafx.scene.web.WebView instance.
+ *
+ * Instances are keyed by the handle the JavaFX side generated in _initWebView
+ * (bridge_webview.c) and threads through every native call. All entry points
+ * from native code are static routers taking that handle; events for handles
+ * that were already removed (or never created) are dropped — this is correct:
+ * a JavaFX WebView being torn down can still emit transform/visibility events.
+ *
+ * Threading: the static routers are called on the JavaFX (Graal) thread. All
+ * android.view / android.webkit access happens on the UI thread. Geometry is
+ * kept in fields guarded by geomLock and applied by a single coalesced
+ * UI-thread runnable, so out-of-order or dropped updates cannot occur and the
+ * last write always wins.
+ */
 public class NativeWebView {
 
-    private static final String TAG     = "GraalActivity";
+    private static final String TAG = "GraalActivity";
 
-    private static MainActivity instance;
+    private static final ConcurrentHashMap<Long, NativeWebView> INSTANCES = new ConcurrentHashMap<>();
+
+    // ---- static routers, invoked from javafx_adapter.c ----
+
+    public static void create(long handle) {
+        Log.v(TAG, "NativeWebView create, handle " + handle);
+        INSTANCES.put(handle, new NativeWebView(handle));
+    }
+
+    public static void loadUrl(long handle, String url) {
+        NativeWebView i = INSTANCES.get(handle);
+        if (i != null) i.doLoadUrl(url);
+    }
+
+    public static void loadContent(long handle, String content) {
+        NativeWebView i = INSTANCES.get(handle);
+        if (i != null) i.doLoadContent(content);
+    }
+
+    public static void setX(long handle, double x) {
+        NativeWebView i = INSTANCES.get(handle);
+        if (i != null) { synchronized (i.geomLock) { i.gx = x; } i.scheduleApply(); }
+    }
+
+    public static void setY(long handle, double y) {
+        NativeWebView i = INSTANCES.get(handle);
+        if (i != null) { synchronized (i.geomLock) { i.gy = y; } i.scheduleApply(); }
+    }
+
+    public static void setWidth(long handle, double w) {
+        NativeWebView i = INSTANCES.get(handle);
+        if (i != null) { synchronized (i.geomLock) { i.gw = w; } i.scheduleApply(); }
+    }
+
+    public static void setHeight(long handle, double h) {
+        NativeWebView i = INSTANCES.get(handle);
+        if (i != null) { synchronized (i.geomLock) { i.gh = h; } i.scheduleApply(); }
+    }
+
+    public static void setVisible(long handle, boolean visible) {
+        NativeWebView i = INSTANCES.get(handle);
+        if (i != null) { synchronized (i.geomLock) { i.gVisible = visible; } i.scheduleApply(); }
+    }
+
+    public static String executeScript(long handle, String script) {
+        NativeWebView i = INSTANCES.get(handle);
+        return i != null ? i.doExecuteScript(script) : null;
+    }
+
+    public static void reload(long handle) {
+        NativeWebView i = INSTANCES.get(handle);
+        if (i != null) i.doReload();
+    }
+
+    public static void remove(long handle) {
+        Log.v(TAG, "NativeWebView remove, handle " + handle);
+        NativeWebView i = INSTANCES.remove(handle);
+        if (i != null) i.doRemove();
+    }
+
+    // ---- instance ----
+
+    private final long handle;
+    private final MainActivity activity;
+
+    // UI thread only:
     private WebView webView;
-    private boolean inlayout = false;
-    private boolean layoutStarted = false;
-    private double width = 0;
-    private double height = 0;
-    private int x = 0;
-    private int y = 0;
-    private boolean visible = true;
-    private String scriptResult;
+    private boolean removed = false;
 
-    public NativeWebView() {
-        Log.v(TAG, "NATIVEWEBVIEW constructor starts");
-        instance = MainActivity.getInstance();
-        instance.runOnUiThread(new Runnable () {
-            public void run() {
-                NativeWebView.this.webView = new WebView(instance);
-                NativeWebView.this.webView.setWebChromeClient(new WebChromeClient());
-                NativeWebView.this.webView.setWebViewClient(new WebViewClient() {
-                    @Override
-                    public void onPageStarted(WebView view, String url, Bitmap favicon) {
-                        super.onPageStarted(view, url, favicon);
-                        Log.d(TAG, "Page started: " + url);
-                        nativeStartURL(url);
-                    }
+    // Geometry in physical pixels (density scaling already applied in C).
+    private final Object geomLock = new Object();
+    private double gx, gy, gw, gh;   // guarded by geomLock
+    private boolean gVisible = true; // guarded by geomLock
 
-                    @Override
-                    public void onPageFinished(WebView view, final String url) {
-                        Log.v(TAG, "Page finished: " + url);
-                        // convert HTML into XML before it can be parsed into DOM
-                        NativeWebView.this.webView.evaluateJavascript("new XMLSerializer().serializeToString(document)", new ValueCallback<String>() {
-                            @Override
-                            public void onReceiveValue(String s) {
-                                Properties p = new Properties();
-                                try {
-                                    p.load(new StringReader("innerHtmlKey=" + s));
-                                } catch (Exception e) {
+    private final AtomicBoolean applyPending = new AtomicBoolean(false);
 
-                                }
-                                nativeFinishURL(url, p.getProperty("innerHtmlKey"));
-                            }
-                        });
-                    }
-
-                    @Override
-                    public boolean shouldOverrideUrlLoading(WebView view, String url) {
-                        if (url.contains("javacall")) {
-                            Log.v(TAG, "Stop url loading, due to javacall: " + url);
-                            nativeJavaCallURL(url);
-                            return true;
-                        }
-                        return false;
-                    }
-
-                    @RequiresApi(api = Build.VERSION_CODES.M)
-                    @Override
-                    public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
-                        Log.v(TAG, "LOAD onReceivedError: request: " + request.getMethod());
-                        Log.v(TAG, "LOAD onReceivedError: errorResponse: " + error.getDescription());
-                        nativeFailedURL(request.getUrl().toString());
-                    }
-
-                    @Override
-                    public void onReceivedHttpError(WebView view, WebResourceRequest request, WebResourceResponse errorResponse) {
-                        Log.v(TAG, "LOAD onReceivedHttpError: request: " + request.getMethod());
-                        Log.v(TAG, "LOAD onReceivedHttpError: errorResponse: " + errorResponse.getReasonPhrase());
-                        nativeFailedURL(request.getUrl().toString());
-                    }
-
-                });
-
-                WebSettings webSettings = NativeWebView.this.webView.getSettings();
-                // TODO, pass from Java
-                webSettings.setJavaScriptEnabled(true);
-                webSettings.setJavaScriptCanOpenWindowsAutomatically(true);
-                webSettings.setDomStorageEnabled(true);
-                webSettings.setUseWideViewPort(true);
-                webSettings.setLoadWithOverviewMode(true);
-                webSettings.setAllowContentAccess(true);
-                webSettings.setAllowFileAccess(true);
-                webSettings.setBuiltInZoomControls(true);
-
-                // TODO: Allow remote debugging
-                WebView.setWebContentsDebuggingEnabled(false);
-
-                Log.v(TAG, "NATIVEWEBVIEW wv = "+NativeWebView.this.webView);
-            }
-        });
-        reLayout();
-        Log.v(TAG, "NATIVEWEBVIEW constructor returns: "+this);
+    private NativeWebView(long handle) {
+        this.handle = handle;
+        this.activity = MainActivity.getInstance();
+        // runOnUiThread is FIFO: this creation runnable always runs before any
+        // applyGeometry posted by the setters afterwards.
+        activity.runOnUiThread(this::createWebView);
     }
 
-    public void loadUrl(final String url) {
-        Log.v(TAG, "in dalvik, loadUrl called wwith url = "+url+" and webView = "+this.webView);
-        instance.runOnUiThread(new Runnable () {
-            public void run() {
-                NativeWebView.this.webView.loadUrl(url);
-            }
-        });
-    }
-
-    public void loadContent(final String content) {
-        Log.v(TAG, "in dalvik, loadContent called with webView = "+this.webView);
-        instance.runOnUiThread(new Runnable () {
-            public void run() {
-                NativeWebView.this.webView.loadData(content, "text/html; charset=utf-8", "UTF-8");
-            }
-        });
-    }
-
-    public String executeScript(final String script) {
-        Log.v(TAG, "in dalvik, loadUrl called with script  and webView = "+this.webView);
-        final CountDownLatch latch = new CountDownLatch(1);
-        scriptResult = null;
-        Runnable action = new Runnable() {
+    private void createWebView() {
+        webView = new WebView(activity);
+        webView.setWebChromeClient(new WebChromeClient());
+        webView.setWebViewClient(new WebViewClient() {
             @Override
-            public void run() {
-                NativeWebView.this.webView.evaluateJavascript(script, new ValueCallback<String>() {
+            public void onPageStarted(WebView view, String url, Bitmap favicon) {
+                super.onPageStarted(view, url, favicon);
+                Log.v(TAG, "Page started: " + url);
+                nativeStartURL(handle, url);
+            }
+
+            @Override
+            public void onPageFinished(WebView view, final String url) {
+                Log.v(TAG, "Page finished: " + url);
+                // The JavaFX WebEngine builds its Document from the serialized DOM.
+                view.evaluateJavascript("new XMLSerializer().serializeToString(document)", new ValueCallback<String>() {
                     @Override
                     public void onReceiveValue(String s) {
-                        scriptResult = s.replace("\\\"", "");
-                        Log.v(TAG, "in dalvik, script result: " + scriptResult);
-                        latch.countDown();
+                        nativeFinishURL(handle, url, unwrapJsResult(s));
                     }
                 });
             }
-        };
-        webView.post(action);
-        try {
-            latch.await();
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-        Log.v(TAG, "in dalvik, loadUrl script result = " + scriptResult);
-        return scriptResult;
-    }
 
-    private void setVisible(boolean visible) {
-        if (this.visible != visible) {
-            this.visible = visible;
-            Log.v(TAG, "in dalvik, set visible = " + visible);
-            instance.runOnUiThread(new Runnable() {
-                public void run() {
-                    if (NativeWebView.this.visible) {
-                        NativeWebView.this.webView.setVisibility(View.VISIBLE);
-                    } else {
-                        NativeWebView.this.webView.setVisibility(View.GONE);
-                    }
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, String url) {
+                if (url.contains("javacall")) {
+                    Log.v(TAG, "Stop url loading, due to javacall: " + url);
+                    nativeJavaCallURL(handle, url);
+                    return true;
                 }
-            });
-        }
-    }
+                return false;
+            }
 
-    private void setX(double x) {
-        if (this.x != (int) x) {
-            this.x = (int) x;
-            reLayout();
-        }
-    }
+            @RequiresApi(api = Build.VERSION_CODES.M)
+            @Override
+            public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
+                Log.v(TAG, "LOAD onReceivedError: " + request.getUrl() + ": " + error.getDescription());
+                nativeFailedURL(handle, request.getUrl().toString());
+            }
 
-    private void setY(double y) {
-        if (this.y != (int) y) {
-            this.y = (int) y;
-            reLayout();
-        }
-    }
+            @Override
+            public void onReceivedHttpError(WebView view, WebResourceRequest request, WebResourceResponse errorResponse) {
+                Log.v(TAG, "LOAD onReceivedHttpError: " + request.getUrl() + ": " + errorResponse.getReasonPhrase());
+                nativeFailedURL(handle, request.getUrl().toString());
+            }
 
-    private void setWidth(double width) {
-        if (this.width != width) {
-            this.width = width;
-            reLayout();
-        }
-    }
-
-    private void setHeight(double height) {
-        if (this.height != height){
-            this.height = height;
-            reLayout();
-        }
-    }
-
-    private void reLayout() {
-        Log.v(TAG, "relayout...");
-        if (!inlayout) {
-            if (!layoutStarted) {
-                instance.runOnUiThread(new Runnable() {
-                    public void run() {
-                        FrameLayout.LayoutParams layout = new FrameLayout.LayoutParams(
-                                ViewGroup.LayoutParams.WRAP_CONTENT,
-                                ViewGroup.LayoutParams.WRAP_CONTENT,
-                                Gravity.NO_GRAVITY);
-                        MainActivity.getViewGroup().addView(webView, layout);
-                        inlayout = true;
+            @Override
+            public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                String url = request.getUrl().toString();
+                if (url.startsWith("resource:/")) {
+                    String path = url.substring("resource:".length());
+                    byte[] data = loadResourceBytes(path);
+                    if (data != null) {
+                        Log.v(TAG, "Serving resource lazily: " + url);
+                        return new WebResourceResponse(getMimeTypeForUrl(url), "UTF-8", new ByteArrayInputStream(data));
                     }
-                });
+                    Log.w(TAG, "resource: not found: " + url);
+                }
+                return super.shouldInterceptRequest(view, request);
             }
-            layoutStarted = true;
+        });
+
+        WebSettings webSettings = webView.getSettings();
+        webSettings.setJavaScriptEnabled(true);
+        webSettings.setJavaScriptCanOpenWindowsAutomatically(true);
+        webSettings.setDomStorageEnabled(true);
+        webSettings.setUseWideViewPort(true);
+        webSettings.setLoadWithOverviewMode(true);
+        webSettings.setAllowContentAccess(true);
+        webSettings.setAllowFileAccess(true);
+        webSettings.setBuiltInZoomControls(true);
+        webSettings.setDisplayZoomControls(false);
+
+        // chrome://inspect works on debuggable builds only.
+        boolean debuggable = (activity.getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
+        WebView.setWebContentsDebuggingEnabled(debuggable);
+
+        applyGeometry();
+        Log.v(TAG, "NativeWebView created, handle " + handle);
+    }
+
+    private void scheduleApply() {
+        // Coalesce: at most one apply queued at any time.
+        if (applyPending.compareAndSet(false, true)) {
+            activity.runOnUiThread(this::applyGeometry);
         }
-        instance.runOnUiThread(new Runnable () {
-            public void run() {
-                FrameLayout.LayoutParams layout =
-                        (FrameLayout.LayoutParams) webView.getLayoutParams();
-                layout.leftMargin = x;
-                layout.topMargin = y;
-                layout.width = (int) width;
-                layout.height = (int) height;
-                MainActivity.getViewGroup().updateViewLayout(webView, layout);
-            }
-        });
-
     }
 
-    private void reload() {
-        Log.v(TAG, "reload webView");
-        instance.runOnUiThread(new Runnable () {
-            public void run() {
-                NativeWebView.this.webView.reload();
+    private void applyGeometry() {
+        // Clear the flag BEFORE reading the values: a setter racing with this
+        // apply then re-schedules instead of being lost.
+        applyPending.set(false);
+        int x, y, w, h;
+        boolean visible;
+        synchronized (geomLock) {
+            x = (int) Math.round(gx);
+            y = (int) Math.round(gy);
+            w = (int) Math.round(gw);
+            h = (int) Math.round(gh);
+            visible = gVisible;
+        }
+        if (removed || webView == null) {
+            return;
+        }
+        if (w <= 0 || h <= 0) {
+            // Never attach (or keep showing) a zero-sized view: an early
+            // WRAP_CONTENT attach is what caused the full-size flash at 0,0.
+            if (webView.getParent() != null) {
+                webView.setVisibility(View.GONE);
+            }
+            return;
+        }
+        if (webView.getParent() == null) {
+            FrameLayout.LayoutParams layout = new FrameLayout.LayoutParams(w, h, Gravity.NO_GRAVITY);
+            layout.leftMargin = x;
+            layout.topMargin = y;
+            MainActivity.getViewGroup().addView(webView, layout);
+        } else {
+            FrameLayout.LayoutParams layout = (FrameLayout.LayoutParams) webView.getLayoutParams();
+            layout.leftMargin = x;
+            layout.topMargin = y;
+            layout.width = w;
+            layout.height = h;
+            MainActivity.getViewGroup().updateViewLayout(webView, layout);
+        }
+        webView.setVisibility(visible ? View.VISIBLE : View.GONE);
+        Log.v(TAG, "applyGeometry handle=" + handle + " x=" + x + " y=" + y + " w=" + w + " h=" + h + " visible=" + visible);
+    }
+
+    private void doLoadUrl(final String url) {
+        Log.v(TAG, "loadUrl, handle " + handle + ", url " + url);
+        activity.runOnUiThread(() -> {
+            if (!removed && webView != null) {
+                webView.loadUrl(url);
             }
         });
     }
 
-    private void remove() {
-        Log.v(TAG, "remove webView");
-        instance.runOnUiThread(new Runnable () {
-            public void run() {
-                MainActivity.getViewGroup().removeView(webView);
-                // TODO: destroy webView ?
-                layoutStarted = false;
-                inlayout = false;
+    private void doLoadContent(final String content) {
+        Log.v(TAG, "loadContent, handle " + handle);
+        activity.runOnUiThread(() -> {
+            if (!removed && webView != null) {
+                webView.loadDataWithBaseURL(null, content, "text/html", "UTF-8", null);
             }
         });
     }
 
-    private native void nativeStartURL(String url);
-    private native void nativeFinishURL(String url, String innerHTML);
-    private native void nativeFailedURL(String url);
-    private native void nativeJavaCallURL(String url);
+    private void doReload() {
+        activity.runOnUiThread(() -> {
+            if (!removed && webView != null) {
+                webView.reload();
+            }
+        });
+    }
+
+    private void doRemove() {
+        activity.runOnUiThread(() -> {
+            if (removed) {
+                return;
+            }
+            removed = true;
+            if (webView != null) {
+                if (webView.getParent() != null) {
+                    MainActivity.getViewGroup().removeView(webView);
+                }
+                // Release the Chromium renderer; help windows are opened and
+                // closed repeatedly and each WebView holds native memory.
+                webView.destroy();
+                webView = null;
+            }
+        });
+    }
+
+    /**
+     * Called on the JavaFX (Graal) thread, which blocks until the UI thread has
+     * evaluated the script. Bounded wait: a page that never answers (nothing
+     * loaded yet, renderer gone) must not hang the JavaFX thread forever.
+     */
+    private String doExecuteScript(final String script) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            // Would deadlock: the latch below is released by UI-thread work.
+            Log.e(TAG, "executeScript called on the UI thread; returning null");
+            return null;
+        }
+        final CountDownLatch latch = new CountDownLatch(1);
+        final AtomicReference<String> result = new AtomicReference<>();
+        activity.runOnUiThread(() -> {
+            if (removed || webView == null) {
+                latch.countDown();
+                return;
+            }
+            webView.evaluateJavascript(script, s -> {
+                result.set(unwrapJsResult(s));
+                latch.countDown();
+            });
+        });
+        try {
+            if (!latch.await(10, TimeUnit.SECONDS)) {
+                Log.w(TAG, "executeScript timed out, handle " + handle);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        return result.get();
+    }
+
+    /**
+     * evaluateJavascript returns the result as a JSON value ("abc" arrives as
+     * \"abc\" with inner escapes). The JavaFX WebEngine expects the raw string
+     * its bridge script returned, so exactly one JSON layer is stripped here.
+     */
+    private static String unwrapJsResult(String s) {
+        if (s == null || "null".equals(s)) {
+            return null;
+        }
+        try {
+            Object value = new JSONTokener(s).nextValue();
+            if (value == null || value == JSONObject.NULL) {
+                return null;
+            }
+            return value.toString();
+        } catch (JSONException e) {
+            return s;
+        }
+    }
+
+    private static String getMimeTypeForUrl(String url) {
+        if (url.endsWith(".html") || url.endsWith(".htm")) return "text/html";
+        if (url.endsWith(".css")) return "text/css";
+        if (url.endsWith(".js")) return "application/javascript";
+        if (url.endsWith(".png")) return "image/png";
+        if (url.endsWith(".jpg") || url.endsWith(".jpeg")) return "image/jpeg";
+        if (url.endsWith(".svg")) return "image/svg+xml";
+        if (url.endsWith(".gif")) return "image/gif";
+        if (url.endsWith(".woff")) return "font/woff";
+        if (url.endsWith(".woff2")) return "font/woff2";
+        if (url.endsWith(".ico")) return "image/x-icon";
+        if (url.endsWith(".json")) return "application/json";
+        return "application/octet-stream";
+    }
+
+    private native byte[] loadResourceBytes(String path);
+
+    private native void nativeStartURL(long handle, String url);
+    private native void nativeFinishURL(long handle, String url, String innerHTML);
+    private native void nativeFailedURL(long handle, String url);
+    private native void nativeJavaCallURL(long handle, String url);
 }

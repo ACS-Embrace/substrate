@@ -53,9 +53,13 @@ EGLBoolean __wrap_eglSwapBuffers(EGLDisplay dpy, EGLSurface surface) {
 }
 
 #ifdef JAVAFX_WEB
+/*
+ * All calls into the Dalvik NativeWebView go through static router methods keyed
+ * by the handle that javafx.scene.web.WebView threads through every native call
+ * (see bridge_webview.c). The instance map lives on the Dalvik side.
+ */
 jclass nativeWebViewClass;
-jobject nativeWebViewObj;
-jmethodID nativeWebView_init;
+jmethodID nativeWebView_create;
 jmethodID nativeWebView_loadUrl;
 jmethodID nativeWebView_loadContent;
 jmethodID nativeWebView_x;
@@ -68,21 +72,32 @@ jmethodID nativeWebView_reload;
 jmethodID nativeWebView_remove;
 int reg = -1;
 
+static int checkAndClearDalvikException(JNIEnv *env, const char *where) {
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionDescribe(env);
+        (*env)->ExceptionClear(env);
+        LOGE(stderr, "WebView: Dalvik JNI exception in %s (cleared)\n", where);
+        return 1;
+    }
+    return 0;
+}
+
 void registerJavaFXMethodHandles(JNIEnv *aenv)
 {
     if (reg < 0) {
         nativeWebViewClass = (*aenv)->NewGlobalRef(aenv, (*aenv)->FindClass(aenv, "com/gluonhq/helloandroid/NativeWebView"));
-        nativeWebView_init = (*aenv)->GetMethodID(aenv, nativeWebViewClass, "<init>", "()V");
-        nativeWebView_loadUrl = (*aenv)->GetMethodID(aenv, nativeWebViewClass, "loadUrl", "(Ljava/lang/String;)V");
-        nativeWebView_loadContent = (*aenv)->GetMethodID(aenv, nativeWebViewClass, "loadContent", "(Ljava/lang/String;)V");
-        nativeWebView_x = (*aenv)->GetMethodID(aenv, nativeWebViewClass, "setX", "(D)V");
-        nativeWebView_y = (*aenv)->GetMethodID(aenv, nativeWebViewClass, "setY", "(D)V");
-        nativeWebView_width = (*aenv)->GetMethodID(aenv, nativeWebViewClass, "setWidth", "(D)V");
-        nativeWebView_height = (*aenv)->GetMethodID(aenv, nativeWebViewClass, "setHeight", "(D)V");
-        nativeWebView_visible = (*aenv)->GetMethodID(aenv, nativeWebViewClass, "setVisible", "(Z)V");
-        nativeWebView_executeScript = (*aenv)->GetMethodID(aenv, nativeWebViewClass, "executeScript", "(Ljava/lang/String;)Ljava/lang/String;");
-        nativeWebView_reload = (*aenv)->GetMethodID(aenv, nativeWebViewClass, "reload", "()V");
-        nativeWebView_remove = (*aenv)->GetMethodID(aenv, nativeWebViewClass, "remove", "()V");
+        nativeWebView_create = (*aenv)->GetStaticMethodID(aenv, nativeWebViewClass, "create", "(J)V");
+        nativeWebView_loadUrl = (*aenv)->GetStaticMethodID(aenv, nativeWebViewClass, "loadUrl", "(JLjava/lang/String;)V");
+        nativeWebView_loadContent = (*aenv)->GetStaticMethodID(aenv, nativeWebViewClass, "loadContent", "(JLjava/lang/String;)V");
+        nativeWebView_x = (*aenv)->GetStaticMethodID(aenv, nativeWebViewClass, "setX", "(JD)V");
+        nativeWebView_y = (*aenv)->GetStaticMethodID(aenv, nativeWebViewClass, "setY", "(JD)V");
+        nativeWebView_width = (*aenv)->GetStaticMethodID(aenv, nativeWebViewClass, "setWidth", "(JD)V");
+        nativeWebView_height = (*aenv)->GetStaticMethodID(aenv, nativeWebViewClass, "setHeight", "(JD)V");
+        nativeWebView_visible = (*aenv)->GetStaticMethodID(aenv, nativeWebViewClass, "setVisible", "(JZ)V");
+        nativeWebView_executeScript = (*aenv)->GetStaticMethodID(aenv, nativeWebViewClass, "executeScript", "(JLjava/lang/String;)Ljava/lang/String;");
+        nativeWebView_reload = (*aenv)->GetStaticMethodID(aenv, nativeWebViewClass, "reload", "(J)V");
+        nativeWebView_remove = (*aenv)->GetStaticMethodID(aenv, nativeWebViewClass, "remove", "(J)V");
+        checkAndClearDalvikException(aenv, "registerJavaFXMethodHandles");
         reg = 1;
     }
 }
@@ -182,132 +197,138 @@ Java_javafx_scene_control_skin_TextAreaSkinAndroid_hideSoftwareKeyboard(JNIEnv *
 }
 
 #ifdef JAVAFX_WEB
-void substrate_showWebView() {
-    LOGE(stderr, "Substrate needs to show Webview\n");
+void substrate_createWebView(jlong handle) {
+    LOGE(stderr, "Substrate creating WebView, handle %lld\n", (long long) handle);
     ATTACH_DALVIK();
-    jobject tmpobj = (jobject)((*dalvikEnv)->NewObject(dalvikEnv, nativeWebViewClass, nativeWebView_init));
-    nativeWebViewObj = (jobject)((*dalvikEnv)->NewGlobalRef(dalvikEnv, tmpobj));
-    LOGE(stderr, "Substrate Created Android WebView\n");
-    if ((*dalvikEnv)->ExceptionOccurred(dalvikEnv)) {
-        LOGE(stderr, "EXCEPTION CREATING WEBVIEW\n");
-    }
+    (*dalvikEnv)->CallStaticVoidMethod(dalvikEnv, nativeWebViewClass, nativeWebView_create, handle);
+    checkAndClearDalvikException(dalvikEnv, "createWebView");
     DETACH_DALVIK();
 }
 
-void substrate_loadUrl(char* curl) {
+void substrate_loadUrl(jlong handle, char* curl) {
     ATTACH_DALVIK();
-    LOGE(stderr, "load curl: %s\n", curl);
+    LOGE(stderr, "load url: %s\n", curl);
     jstring jurl = (*dalvikEnv)->NewStringUTF(dalvikEnv, curl);
-    LOGE(stderr, "call loadurl and wvo = %p\n", nativeWebViewObj);
-    (*dalvikEnv)->CallVoidMethod(dalvikEnv, nativeWebViewObj, nativeWebView_loadUrl, jurl);
-    // Release
+    (*dalvikEnv)->CallStaticVoidMethod(dalvikEnv, nativeWebViewClass, nativeWebView_loadUrl, handle, jurl);
+    checkAndClearDalvikException(dalvikEnv, "loadUrl");
+    (*dalvikEnv)->DeleteLocalRef(dalvikEnv, jurl);
     DETACH_DALVIK();
 }
 
-void substrate_loadContent(char* curl) {
+void substrate_loadContent(jlong handle, char* content) {
     ATTACH_DALVIK();
-    LOGE(stderr, "load content: %s\n", curl);
-    jstring jurl = (*dalvikEnv)->NewStringUTF(dalvikEnv, curl);
-    LOGE(stderr, "call loadContent and wvo = %p\n", nativeWebViewObj);
-    (*dalvikEnv)->CallVoidMethod(dalvikEnv, nativeWebViewObj, nativeWebView_loadContent, jurl);
-    // Release
+    jstring jcontent = (*dalvikEnv)->NewStringUTF(dalvikEnv, content);
+    (*dalvikEnv)->CallStaticVoidMethod(dalvikEnv, nativeWebViewClass, nativeWebView_loadContent, handle, jcontent);
+    checkAndClearDalvikException(dalvikEnv, "loadContent");
+    (*dalvikEnv)->DeleteLocalRef(dalvikEnv, jcontent);
     DETACH_DALVIK();
 }
 
-void substrate_setWebViewX(double x) {
+/* Coordinates and sizes from JavaFX are logical pixels; the Android view
+ * hierarchy works in physical pixels, hence the density multiplication
+ * (density is set in surfaceReady). */
+void substrate_setWebViewX(jlong handle, double x) {
     ATTACH_DALVIK();
-    LOGE(stderr, "webView x %f\n", x);
-    (*dalvikEnv)->CallVoidMethod(dalvikEnv, nativeWebViewObj, nativeWebView_x, x * density);
+    (*dalvikEnv)->CallStaticVoidMethod(dalvikEnv, nativeWebViewClass, nativeWebView_x, handle, x * density);
+    checkAndClearDalvikException(dalvikEnv, "setWebViewX");
     DETACH_DALVIK();
 }
 
-void substrate_setWebViewY(double y) {
+void substrate_setWebViewY(jlong handle, double y) {
     ATTACH_DALVIK();
-    LOGE(stderr, "webView y %f\n", y);
-    (*dalvikEnv)->CallVoidMethod(dalvikEnv, nativeWebViewObj, nativeWebView_y, y * density);
+    (*dalvikEnv)->CallStaticVoidMethod(dalvikEnv, nativeWebViewClass, nativeWebView_y, handle, y * density);
+    checkAndClearDalvikException(dalvikEnv, "setWebViewY");
     DETACH_DALVIK();
 }
 
-void substrate_setWebViewWidth(double width) {
+void substrate_setWebViewWidth(jlong handle, double width) {
     ATTACH_DALVIK();
-    LOGE(stderr, "webView width %f\n", width);
-    (*dalvikEnv)->CallVoidMethod(dalvikEnv, nativeWebViewObj, nativeWebView_width, width * density);
+    (*dalvikEnv)->CallStaticVoidMethod(dalvikEnv, nativeWebViewClass, nativeWebView_width, handle, width * density);
+    checkAndClearDalvikException(dalvikEnv, "setWebViewWidth");
     DETACH_DALVIK();
 }
 
-void substrate_setWebViewHeight(double height) {
+void substrate_setWebViewHeight(jlong handle, double height) {
     ATTACH_DALVIK();
-    LOGE(stderr, "webView height %f\n", height);
-    (*dalvikEnv)->CallVoidMethod(dalvikEnv, nativeWebViewObj, nativeWebView_height, height * density);
+    (*dalvikEnv)->CallStaticVoidMethod(dalvikEnv, nativeWebViewClass, nativeWebView_height, handle, height * density);
+    checkAndClearDalvikException(dalvikEnv, "setWebViewHeight");
     DETACH_DALVIK();
 }
 
-void substrate_setWebViewVisible(jboolean visible) {
+void substrate_setWebViewVisible(jlong handle, jboolean visible) {
     ATTACH_DALVIK();
     LOGE(stderr, "webView visible %d\n", (visible ? 1 : 0));
-    (*dalvikEnv)->CallVoidMethod(dalvikEnv, nativeWebViewObj, nativeWebView_visible, visible);
+    (*dalvikEnv)->CallStaticVoidMethod(dalvikEnv, nativeWebViewClass, nativeWebView_visible, handle, visible);
+    checkAndClearDalvikException(dalvikEnv, "setWebViewVisible");
     DETACH_DALVIK();
 }
 
-char* substrate_executeScript(char* script) {
+/* Returns a malloc'ed copy the caller must free, or NULL. The string contents
+ * must be copied before DETACH_DALVIK: the JNI string memory is only valid
+ * while attached. */
+char* substrate_executeScript(jlong handle, char* script) {
     ATTACH_DALVIK();
-    LOGE(stderr, "load script\n");
     jstring jscript = (*dalvikEnv)->NewStringUTF(dalvikEnv, script);
-    jstring result = (*dalvikEnv)->CallObjectMethod(dalvikEnv, nativeWebViewObj, nativeWebView_executeScript, jscript);
-    const char *resultChars = (*dalvikEnv)->GetStringUTFChars(dalvikEnv, result, 0);
-    LOGE(stderr, "script result: %s\n", resultChars);
-    // Release
+    jstring result = (jstring)(*dalvikEnv)->CallStaticObjectMethod(dalvikEnv, nativeWebViewClass,
+            nativeWebView_executeScript, handle, jscript);
+    (*dalvikEnv)->DeleteLocalRef(dalvikEnv, jscript);
+    char *copy = NULL;
+    if (!checkAndClearDalvikException(dalvikEnv, "executeScript") && result != NULL) {
+        const char *resultChars = (*dalvikEnv)->GetStringUTFChars(dalvikEnv, result, NULL);
+        if (resultChars != NULL) {
+            copy = strdup(resultChars);
+            (*dalvikEnv)->ReleaseStringUTFChars(dalvikEnv, result, resultChars);
+        }
+    }
     DETACH_DALVIK();
-    return resultChars;
+    return copy;
 }
 
-void substrate_reloadWebView() {
+void substrate_reloadWebView(jlong handle) {
     ATTACH_DALVIK();
-    LOGE(stderr, "reload webView\n");
-    (*dalvikEnv)->CallVoidMethod(dalvikEnv, nativeWebViewObj, nativeWebView_reload);
+    (*dalvikEnv)->CallStaticVoidMethod(dalvikEnv, nativeWebViewClass, nativeWebView_reload, handle);
+    checkAndClearDalvikException(dalvikEnv, "reloadWebView");
     DETACH_DALVIK();
 }
 
-void substrate_removeWebView() {
+void substrate_removeWebView(jlong handle) {
     ATTACH_DALVIK();
-    LOGE(stderr, "remove webView\n");
-    (*dalvikEnv)->CallVoidMethod(dalvikEnv, nativeWebViewObj, nativeWebView_remove);
+    LOGE(stderr, "remove webView, handle %lld\n", (long long) handle);
+    (*dalvikEnv)->CallStaticVoidMethod(dalvikEnv, nativeWebViewClass, nativeWebView_remove, handle);
+    checkAndClearDalvikException(dalvikEnv, "removeWebView");
     DETACH_DALVIK();
 }
 
 // Callbacks
 
-JNIEXPORT void JNICALL Java_com_gluonhq_helloandroid_NativeWebView_nativeStartURL(JNIEnv *env, jobject activity, jstring url)
+JNIEXPORT void JNICALL Java_com_gluonhq_helloandroid_NativeWebView_nativeStartURL(JNIEnv *env, jobject obj, jlong handle, jstring url)
 {
     const char *curl = (*env)->GetStringUTFChars(env, url, NULL);
     LOGE(stderr, "nativeStartURL called. URL: %s\n", curl);
-    androidJfx_startURL(curl);
+    androidJfx_startURL(handle, curl);
     (*env)->ReleaseStringUTFChars(env, url, curl);
 }
 
-JNIEXPORT void JNICALL Java_com_gluonhq_helloandroid_NativeWebView_nativeFinishURL(JNIEnv *env, jobject activity, jstring url, jstring html)
+JNIEXPORT void JNICALL Java_com_gluonhq_helloandroid_NativeWebView_nativeFinishURL(JNIEnv *env, jobject obj, jlong handle, jstring url, jstring html)
 {
-    LOGE(stderr, "nativeFinishURL called. Invoke method on webView\n");
     const char *curl = (*env)->GetStringUTFChars(env, url, NULL);
     const char *chtml = (*env)->GetStringUTFChars(env, html, NULL);
-    androidJfx_finishURL(curl, chtml);
+    androidJfx_finishURL(handle, curl, chtml);
     (*env)->ReleaseStringUTFChars(env, url, curl);
     (*env)->ReleaseStringUTFChars(env, html, chtml);
 }
 
-JNIEXPORT void JNICALL Java_com_gluonhq_helloandroid_NativeWebView_nativeFailedURL(JNIEnv *env, jobject activity, jstring url)
+JNIEXPORT void JNICALL Java_com_gluonhq_helloandroid_NativeWebView_nativeFailedURL(JNIEnv *env, jobject obj, jlong handle, jstring url)
 {
-    LOGE(stderr, "nativeFailedURL called. Invoke method on webView\n");
     const char *curl = (*env)->GetStringUTFChars(env, url, NULL);
-    androidJfx_failedURL(curl);
+    androidJfx_failedURL(handle, curl);
     (*env)->ReleaseStringUTFChars(env, url, curl);
 }
 
-JNIEXPORT void JNICALL Java_com_gluonhq_helloandroid_NativeWebView_nativeJavaCallURL(JNIEnv *env, jobject activity, jstring url)
+JNIEXPORT void JNICALL Java_com_gluonhq_helloandroid_NativeWebView_nativeJavaCallURL(JNIEnv *env, jobject obj, jlong handle, jstring url)
 {
-    LOGE(stderr, "nativeJavaCallURL called. Invoke method on webView\n");
     const char *curl = (*env)->GetStringUTFChars(env, url, NULL);
-    androidJfx_javaCallURL(curl);
+    androidJfx_javaCallURL(handle, curl);
     (*env)->ReleaseStringUTFChars(env, url, curl);
 }
 

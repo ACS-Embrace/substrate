@@ -53,7 +53,7 @@ void __attribute__((weak)) androidJfx_gotKeyEvent(int action, int key, jchar *ch
  void __attribute__((weak)) androidJfx_gotMenuEvent(int x, int y, int xAbs, int yAbs, bool isKeyboardTrigger) {}
 int  __attribute__((weak)) to_jfx_touch_action(int state) { return 0; }
 
-void __attribute__((weak)) androidJfx_startURL(const char *url) {}
-void __attribute__((weak)) androidJfx_finishURL(const char *url, const char *html) {}
-void __attribute__((weak)) androidJfx_failedURL(const char *url) {}
-void __attribute__((weak)) androidJfx_javaCallURL(const char *url) {}
+void __attribute__((weak)) androidJfx_startURL(jlong handle, const char *url) {}
+void __attribute__((weak)) androidJfx_finishURL(jlong handle, const char *url, const char *html) {}
+void __attribute__((weak)) androidJfx_failedURL(jlong handle, const char *url) {}
+void __attribute__((weak)) androidJfx_javaCallURL(jlong handle, const char *url) {}

@@ -56,9 +56,9 @@ JavaVM* getWebViewGraalVM();
     int dalviktid_detach = gettid(); \
     if (attach_dalvik_det == 0) (*dalvikVM)->DetachCurrentThread(dalvikVM);
 
-void androidJfx_startURL(const char *url);
-void androidJfx_finishURL(const char *url, const char *html);
-void androidJfx_failedURL(const char *url);
-void androidJfx_javaCallURL(const char *url);
+void androidJfx_startURL(jlong handle, const char *url);
+void androidJfx_finishURL(jlong handle, const char *url, const char *html);
+void androidJfx_failedURL(jlong handle, const char *url);
+void androidJfx_javaCallURL(jlong handle, const char *url);
 
 #endif  /* BRIDGE_WEBVIEW_H */
