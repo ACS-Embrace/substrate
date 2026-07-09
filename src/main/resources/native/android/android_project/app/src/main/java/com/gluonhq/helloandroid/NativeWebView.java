@@ -161,7 +161,17 @@ public class NativeWebView {
 
     private void createWebView() {
         webView = new WebView(activity);
-        webView.setWebChromeClient(new WebChromeClient());
+        // Surface page JS console output and errors in logcat. Without this,
+        // failures like an undefined JS bridge object ("embraceHyperlink is not a
+        // function") are invisible and read as "nothing happened" on a click.
+        webView.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public boolean onConsoleMessage(android.webkit.ConsoleMessage m) {
+                Log.v(TAG, "JSConsole [" + m.messageLevel() + "] " + m.message()
+                        + " @" + m.sourceId() + ":" + m.lineNumber());
+                return true;
+            }
+        });
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
@@ -203,6 +213,15 @@ public class NativeWebView {
             public void onReceivedHttpError(WebView view, WebResourceRequest request, WebResourceResponse errorResponse) {
                 Log.v(TAG, "LOAD onReceivedHttpError: " + request.getUrl() + ": " + errorResponse.getReasonPhrase());
                 nativeFailedURL(handle, request.getUrl().toString());
+            }
+
+            @Override
+            public void onReceivedSslError(WebView view, android.webkit.SslErrorHandler handler, android.net.http.SslError error) {
+                // Blocked loads (expired/invalid certs) otherwise fail silently to a
+                // white page: onPageFinished still fires and no onReceivedError arrives.
+                Log.e(TAG, "LOAD onReceivedSslError (load blocked): " + error);
+                nativeFailedURL(handle, error.getUrl());
+                handler.cancel();
             }
 
             @Override
