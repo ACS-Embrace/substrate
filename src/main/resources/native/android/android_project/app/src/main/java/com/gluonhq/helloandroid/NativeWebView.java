@@ -36,6 +36,7 @@ import android.util.Log;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.FrameLayout;
+import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
@@ -52,6 +53,8 @@ import org.json.JSONTokener;
 import java.io.ByteArrayInputStream;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -151,6 +154,18 @@ public class NativeWebView {
 
     private final AtomicBoolean applyPending = new AtomicBoolean(false);
 
+    // Last committed page URL, written from onPageStarted (UI thread) and read from the
+    // WebView's JavaBridge thread by the embraceNative security gate below.
+    private volatile String currentPageUrl;
+
+    // Runs async bridge posts off the JavaBridge thread so page JS never blocks on the
+    // JNI round-trip into Graal. Single shared thread: posts stay strictly ordered.
+    private static final ExecutorService BRIDGE_POST_EXECUTOR = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "embrace-bridge-post");
+        t.setDaemon(true);
+        return t;
+    });
+
     private NativeWebView(long handle) {
         this.handle = handle;
         this.activity = MainActivity.getInstance();
@@ -177,6 +192,7 @@ public class NativeWebView {
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
                 super.onPageStarted(view, url, favicon);
                 Log.v(TAG, "Page started: " + url);
+                currentPageUrl = url;
                 nativeStartURL(handle, url);
             }
 
@@ -255,8 +271,65 @@ public class NativeWebView {
         boolean debuggable = (activity.getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
         WebView.setWebContentsDebuggingEnabled(debuggable);
 
+        // Synchronous/async JS-to-Java bridge for bundled pages (see EmbraceNativeBridge).
+        webView.addJavascriptInterface(new EmbraceNativeBridge(), "embraceNative");
+
         applyGeometry();
         Log.v(TAG, "NativeWebView created, handle " + handle);
+    }
+
+    /**
+     * JS-to-Java bridge injected as {@code window.embraceNative}, replacing ad-hoc channels
+     * (javacall: URLs, resource-URL sentinels) with a real transport that has no URL-length
+     * limits and supports synchronous return values:
+     *
+     *   window.embraceNative.call(method, argsJson)  -> String   (synchronous)
+     *   window.embraceNative.post(method, argsJson)              (async, fire-and-forget)
+     *
+     * Both funnel into one application-side dispatch hook (via bridge_webview.c):
+     *   AndroidWebViewEngine.dispatchBridgeCall(long handle, String method, String argsJson)
+     * The handle identifies which WebView instance the page belongs to, so the application
+     * can route per-window (help vs AI panel) or namespace methods however it likes; request
+     * correlation, streaming and tool-call protocols are layered in application code on top
+     * of these two primitives and Java-to-JS pushes (executeScript) - no further support is
+     * needed here.
+     *
+     * Threading: Chromium invokes these on its JavaBridge thread (never the UI thread).
+     * call() runs the dispatch inline - page JS blocks until it returns, so handlers must be
+     * quick and must NOT wait on the JavaFX thread (if that thread is stuck in executeScript
+     * the wait only resolves via the 10s timeout). post() hands off to a single background
+     * thread and returns immediately; use it for anything that does real work.
+     *
+     * Security: addJavascriptInterface exposes this object to every page loaded in the
+     * WebView. Only bundled application pages (resource: scheme) may use it - calls from any
+     * other origin (remote docs, redirects) are rejected without touching the dispatch.
+     */
+    private final class EmbraceNativeBridge {
+
+        private boolean allowed() {
+            String url = currentPageUrl;
+            if (url != null && url.startsWith("resource:")) {
+                return true;
+            }
+            Log.w(TAG, "embraceNative bridge blocked for non-bundled page: " + url);
+            return false;
+        }
+
+        @JavascriptInterface
+        public String call(String method, String argsJson) {
+            if (!allowed()) {
+                return null;
+            }
+            return nativeBridgeCall(handle, method, argsJson);
+        }
+
+        @JavascriptInterface
+        public void post(String method, String argsJson) {
+            if (!allowed()) {
+                return;
+            }
+            BRIDGE_POST_EXECUTOR.execute(() -> nativeBridgeCall(handle, method, argsJson));
+        }
     }
 
     private void scheduleApply() {
@@ -420,6 +493,13 @@ public class NativeWebView {
     }
 
     private native byte[] loadResourceBytes(String path);
+
+    /**
+     * Forwards an embraceNative bridge call to the Graal side
+     * (AndroidWebViewEngine.dispatchBridgeCall). Returns the handler's result, or null if
+     * no dispatch hook is registered in the native image or the handler returned null.
+     */
+    private native String nativeBridgeCall(long handle, String method, String argsJson);
 
     private native void nativeStartURL(long handle, String url);
     private native void nativeFinishURL(long handle, String url, String innerHTML);

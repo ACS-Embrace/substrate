@@ -72,8 +72,11 @@ static jmethodID jmidJavaCall = NULL;
 static JavaVM *jvm;
 
 static jclass graalAndroidWebViewEngineClass = NULL;
+static int engineClassLookupFailed = 0;
 static jmethodID jmidGetResourceBytes = NULL;
 static int resourceEngineLookupFailed = 0;
+static jmethodID jmidDispatchBridgeCall = NULL;
+static int bridgeDispatchLookupFailed = 0;
 
 JavaVM* getWebViewGraalVM() {
     return jvm;
@@ -275,19 +278,31 @@ void androidJfx_javaCallURL(jlong handle, const char *url) {
     DETACH_GRAAL();
 }
 
+/* Lazily resolves (and caches, as a global ref) the application's bridge endpoint class.
+ * Class not present or not registered for JNI in the native image (needs a jni-config
+ * entry) => fail once, loudly, and don't retry. */
+static jclass ensureAndroidWebViewEngineClass(JNIEnv *graalEnv) {
+    if (graalAndroidWebViewEngineClass == NULL && !engineClassLookupFailed) {
+        jclass cls = (*graalEnv)->FindClass(graalEnv, "za/co/embrace/desktop/utilities/provided/AndroidWebViewEngine");
+        if (checkAndClearGraalException(graalEnv, "ensureEngineClass:FindClass") || cls == NULL) {
+            fprintf(stderr, "WebView: AndroidWebViewEngine not found; resource: URLs and the embraceNative bridge will not work\n");
+            engineClassLookupFailed = 1;
+        } else {
+            graalAndroidWebViewEngineClass = (jclass)(*graalEnv)->NewGlobalRef(graalEnv, cls);
+        }
+    }
+    return graalAndroidWebViewEngineClass;
+}
+
 char* substrate_loadResourceBytes(const char *path, int *outLength) {
     ATTACH_GRAAL();
     *outLength = 0;
-    if (graalAndroidWebViewEngineClass == NULL && !resourceEngineLookupFailed) {
-        jclass cls = (*graalEnv)->FindClass(graalEnv, "za/co/embrace/desktop/utilities/provided/AndroidWebViewEngine");
-        if (checkAndClearGraalException(graalEnv, "loadResourceBytes:FindClass") || cls == NULL) {
-            /* Class not present or not registered for JNI in the native image
-             * (needs a jni-config entry). Fail once, loudly, and don't retry. */
-            fprintf(stderr, "WebView: AndroidWebViewEngine not found; resource: URLs will not be served\n");
+    if (jmidGetResourceBytes == NULL && !resourceEngineLookupFailed) {
+        jclass cls = ensureAndroidWebViewEngineClass(graalEnv);
+        if (cls == NULL) {
             resourceEngineLookupFailed = 1;
         } else {
-            graalAndroidWebViewEngineClass = (jclass)(*graalEnv)->NewGlobalRef(graalEnv, cls);
-            jmidGetResourceBytes = (*graalEnv)->GetStaticMethodID(graalEnv, graalAndroidWebViewEngineClass,
+            jmidGetResourceBytes = (*graalEnv)->GetStaticMethodID(graalEnv, cls,
                     "getResourceBytes", "(Ljava/lang/String;)[B");
             if (checkAndClearGraalException(graalEnv, "loadResourceBytes:GetStaticMethodID") || jmidGetResourceBytes == NULL) {
                 resourceEngineLookupFailed = 1;
@@ -332,4 +347,69 @@ JNIEXPORT jbyteArray JNICALL
     }
     free(data);
     return result;
+}
+
+/*
+ * window.embraceNative bridge (call/post from page JS, see NativeWebView.java).
+ * Forwards to the application's dispatch hook on the Graal side:
+ *   AndroidWebViewEngine.dispatchBridgeCall(long handle, String method, String argsJson)
+ * Returns a malloc'd copy of the handler's result (caller frees), or NULL if the hook is
+ * absent (older application jar - degrades gracefully, resource serving is unaffected) or
+ * the handler returned null.
+ */
+static char* substrate_dispatchBridgeCall(jlong handle, const char *method, const char *argsJson) {
+    ATTACH_GRAAL();
+    if (jmidDispatchBridgeCall == NULL && !bridgeDispatchLookupFailed) {
+        jclass cls = ensureAndroidWebViewEngineClass(graalEnv);
+        if (cls == NULL) {
+            bridgeDispatchLookupFailed = 1;
+        } else {
+            jmidDispatchBridgeCall = (*graalEnv)->GetStaticMethodID(graalEnv, cls,
+                    "dispatchBridgeCall", "(JLjava/lang/String;Ljava/lang/String;)Ljava/lang/String;");
+            if (checkAndClearGraalException(graalEnv, "dispatchBridgeCall:GetStaticMethodID") || jmidDispatchBridgeCall == NULL) {
+                fprintf(stderr, "WebView: AndroidWebViewEngine.dispatchBridgeCall not found; embraceNative bridge disabled\n");
+                bridgeDispatchLookupFailed = 1;
+            }
+        }
+    }
+    if (bridgeDispatchLookupFailed) {
+        DETACH_GRAAL();
+        return NULL;
+    }
+    jstring jmethod = (*graalEnv)->NewStringUTF(graalEnv, method);
+    jstring jargs = argsJson != NULL ? (*graalEnv)->NewStringUTF(graalEnv, argsJson) : NULL;
+    jstring jresult = (jstring)(*graalEnv)->CallStaticObjectMethod(graalEnv, graalAndroidWebViewEngineClass,
+            jmidDispatchBridgeCall, handle, jmethod, jargs);
+    checkAndClearGraalException(graalEnv, "dispatchBridgeCall:call");
+    char *result = NULL;
+    if (jresult != NULL) {
+        const char *cresult = (*graalEnv)->GetStringUTFChars(graalEnv, jresult, JNI_FALSE);
+        result = strdup(cresult);
+        (*graalEnv)->ReleaseStringUTFChars(graalEnv, jresult, cresult);
+        (*graalEnv)->DeleteLocalRef(graalEnv, jresult);
+    }
+    (*graalEnv)->DeleteLocalRef(graalEnv, jmethod);
+    if (jargs != NULL) {
+        (*graalEnv)->DeleteLocalRef(graalEnv, jargs);
+    }
+    DETACH_GRAAL();
+    return result;
+}
+
+JNIEXPORT jstring JNICALL
+    Java_com_gluonhq_helloandroid_NativeWebView_nativeBridgeCall(JNIEnv *env, jobject obj,
+        jlong handle, jstring jmethod, jstring jargs) {
+    const char *method = (*env)->GetStringUTFChars(env, jmethod, JNI_FALSE);
+    const char *args = jargs != NULL ? (*env)->GetStringUTFChars(env, jargs, JNI_FALSE) : NULL;
+    char *result = substrate_dispatchBridgeCall(handle, method, args);
+    (*env)->ReleaseStringUTFChars(env, jmethod, method);
+    if (args != NULL) {
+        (*env)->ReleaseStringUTFChars(env, jargs, args);
+    }
+    if (result == NULL) {
+        return NULL;
+    }
+    jstring jresult = (*env)->NewStringUTF(env, result);
+    free(result);
+    return jresult;
 }
