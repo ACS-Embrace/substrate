@@ -88,9 +88,12 @@ public class AndroidTargetConfiguration extends PosixTargetConfiguration {
     private final List<String> cFlags = new ArrayList<>(Arrays.asList("-target", ANDROID_TRIPLET, "-I.", "-fPIC"));
     private final List<String> linkFlags = Arrays.asList("-target",
             ANDROID_TRIPLET + ANDROID_MIN_SDK_VERSION, "-fPIC",
+            // Union, not a side: the two --wrap flags are Embrace's Android 16 surface-teardown
+            // crash fixes and are independent of the JDK. The library set is the newer JDK line's
+            // (-lz, without -lffi/-llibchelper), which is what links against static SDK 24-2.1.
             "-Wl,--rosegment,--gc-sections,-z,noexecstack",
             "-Wl,--wrap=eglSwapBuffers", "-Wl,--wrap=eglCreateWindowSurface",
-            "-shared", "-landroid", "-llog", "-lffi", "-llibchelper", "-static-libstdc++");
+            "-shared", "-landroid", "-llog", "-lz", "-static-libstdc++");
     private final List<String> javafxLinkFlags = new ArrayList<>(Arrays.asList(WL_WHOLE_ARCHIVE,
             "-lprism_es2_monocle", "-lglass_monocle", "-ljavafx_font_freetype", "-ljavafx_iio", WL_NO_WHOLE_ARCHIVE,
             "-lGLESv2", "-lEGL", "-lfreetype"));
@@ -157,7 +160,6 @@ public class AndroidTargetConfiguration extends PosixTargetConfiguration {
                             "-p", getAndroidProjectPath().toString(),
                             "assemble" + configuration);
         assembleRunner.addToEnv("ANDROID_HOME", sdk);
-        assembleRunner.addToEnv("JAVA_HOME", projectConfiguration.getGraalPath().toString());
         if (assembleRunner.runProcess("package-task") != 0) {
             return false;
         }
@@ -240,14 +242,8 @@ public class AndroidTargetConfiguration extends PosixTargetConfiguration {
         ArrayList<String> flags = new ArrayList<String>(Arrays.asList(
                 "-H:-SpawnIsolates",
                 "-Dsvm.targetArch=" + projectConfiguration.getTargetTriplet().getArch(),
-                "-H:+ForceNoROSectionRelocations",
-                "--libc=bionic",
                 "-H:+UseCAPCache",
-                "-H:CAPCacheDir=" + getCapCacheDir().toAbsolutePath().toString(),
-                "-H:CompilerBackend=" + projectConfiguration.getBackend()));
-        if (projectConfiguration.isUseLLVM()) {
-            flags.add("-H:CustomLD=" + ldlld.toAbsolutePath().toString());
-        }
+                "-H:CAPCacheDir=" + getCapCacheDir().toAbsolutePath()));
         return flags;
     }
 
@@ -279,9 +275,6 @@ public class AndroidTargetConfiguration extends PosixTargetConfiguration {
         if (projectConfiguration.hasWeb()) {
             cFlags.add("-DJAVAFX_WEB");
         }
-        if (!projectConfiguration.usesJDK11()) {
-            cFlags.add("-DGVM_17");
-        }
         return cFlags;
     }
 
@@ -289,11 +282,11 @@ public class AndroidTargetConfiguration extends PosixTargetConfiguration {
     List<String> getTargetSpecificLinkFlags(boolean useJavaFX, boolean usePrismSW) {
         if (!useJavaFX) return linkFlags;
         List<String> answer = new ArrayList<>();
-        answer.addAll(linkFlags);
         if (projectConfiguration.hasWeb()) {
             javafxLinkFlags.addAll(Arrays.asList(WL_WHOLE_ARCHIVE, javafxWebLib, WL_NO_WHOLE_ARCHIVE));
         }
         answer.addAll(javafxLinkFlags);
+        answer.addAll(linkFlags);
         return answer;
     }
 
@@ -301,11 +294,6 @@ public class AndroidTargetConfiguration extends PosixTargetConfiguration {
     String getLinkOutputName() {
         String appName = projectConfiguration.getAppName();
         return "lib" + appName + ".so";
-    }
-
-    @Override
-    protected List<Path> getStaticJDKLibPaths() throws IOException {
-        return Arrays.asList(fileDeps.getJavaSDKLibsPath());
     }
 
     @Override

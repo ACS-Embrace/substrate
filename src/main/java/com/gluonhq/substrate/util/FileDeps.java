@@ -48,9 +48,8 @@ import java.util.stream.Stream;
 import static com.gluonhq.substrate.target.AndroidTargetConfiguration.ANDROID_NDK_VERSION;
 
 public final class FileDeps {
-
-    private static final String JAVA_STATIC_ZIP = "${staticjdk}-${target}-gvm-${version}.zip";
-    private static final String JAVA_STATIC_URL = "https://download2.gluonhq.com/substrate/staticjdk/";
+    private static final String JAVA_STATIC_ZIP = "gvm-${version}/vmone-${target}.zip";
+    private static final String JAVA_STATIC_URL = "https://github.com/gluonhq/vmone/releases/download/";
     private static final String JAVAFX_STATIC_ZIP = "openjfx-${version}-${target}-static${variant}.zip";
 
     /**
@@ -102,7 +101,7 @@ public final class FileDeps {
     }
 
     private static final List<String> JAVA_FILES = Arrays.asList(
-            "libjava.a", "libnet.a", "libnio.a", "libzip.a", "libprefs.a"
+            "libvmone.a"
     );
 
     private static final List<String> JAVAFX_FILES = Arrays.asList(
@@ -111,7 +110,7 @@ public final class FileDeps {
     );
 
     private static final List<String> JAVAFX_STATIC_FILES = Arrays.asList(
-            "libglass.a", "libglass_monocle.a"
+            "libglass.a"
     );
 
     // https://developer.android.com/studio/index.html#command-line-tools-only
@@ -243,6 +242,7 @@ public final class FileDeps {
      */
     private boolean setupDependencies() throws IOException {
         String target = configuration.getTargetTriplet().getOsArch();
+        String vmoneTarget = Constants.VMONE_TARGET.fromTriplet(configuration.getTargetTriplet().toString()).getTarget();
         boolean isLinuxAarch64 = new Triplet(Constants.Profile.LINUX_AARCH64).equals(configuration.getTargetTriplet());
 
         if (!Files.isDirectory(Constants.USER_SUBSTRATE_PATH)) {
@@ -250,8 +250,8 @@ public final class FileDeps {
         }
 
         Path javaStaticLibs = configuration.getJavaStaticLibsPath();
-        Path defaultJavaStaticPath = configuration.getDefaultJavaStaticPath();
         boolean customJavaLocation = configuration.useCustomJavaStaticLibs();
+        boolean customJavaFXLocation = configuration.useCustomJavafxStaticLibs();
 
         boolean downloadJavaStatic = false;
         boolean downloadJavaFXStatic = false;
@@ -262,37 +262,34 @@ public final class FileDeps {
         // Java Static
         Logger.logDebug("Processing JavaStatic dependencies at " + javaStaticLibs.toString());
 
-        if ((configuration.isUseJNI()) && (!configuration.getHostTriplet().equals(configuration.getTargetTriplet()))) {
-            if (!Files.isDirectory(javaStaticLibs)) {
+        if (!Files.isDirectory(javaStaticLibs)) {
+            if (customJavaLocation) {
+                throw new IOException ("A location for the static sdk libs was supplied, but it doesn't exist: "+javaStaticLibs);
+            }
+            downloadJavaStatic = true;
+        } else {
+            String path = javaStaticLibs.toString();
+            if (JAVA_FILES.stream()
+                    .map(s -> new File(path, s))
+                    .anyMatch(f -> !f.exists())) {
+                Logger.logDebug("java files not found in " + path);
                 if (customJavaLocation) {
-                    throw new IOException ("A location for the static sdk libs was supplied, but it doesn't exist: "+javaStaticLibs);
+                    throw new IOException ("A location for the static sdk libs was supplied, but the java libs are missing "+javaStaticLibs);
                 }
                 downloadJavaStatic = true;
-            } else {
-                String path = javaStaticLibs.toString();
-                if (JAVA_FILES.stream()
-                        .map(s -> new File(path, s))
-                        .anyMatch(f -> !f.exists())) {
-                    Logger.logDebug("jar file not found");
-                    System.err.println("jar not found");
-                    if (customJavaLocation) {
-                        throw new IOException ("A location for the static sdk libs was supplied, but the java libs are missing "+javaStaticLibs);
-                    }
+            } else if (!customJavaLocation && configuration.isEnableCheckHash()) {
+                // when the directory for the libs is found, and it is not a user-supplied one, check for its validity
+                Logger.logDebug("Checking java static sdk hashes");
+                String md5File = getChecksumFileName(javaStaticLibs, "javaStaticSdk", target);
+                Map<String, String> hashes = FileOps.getHashMap(md5File);
+                if (hashes == null) {
+                    Logger.logDebug(md5File+" not found");
                     downloadJavaStatic = true;
-                } else if (!customJavaLocation && configuration.isEnableCheckHash()) {
-                    // when the directory for the libs is found, and it is not a user-supplied one, check for its validity
-                    Logger.logDebug("Checking java static sdk hashes");
-                    String md5File = getChecksumFileName(defaultJavaStaticPath, "javaStaticSdk", target);
-                    Map<String, String> hashes = FileOps.getHashMap(md5File);
-                    if (hashes == null) {
-                        Logger.logDebug(md5File+" not found");
-                        downloadJavaStatic = true;
-                    } else if (JAVA_FILES.stream()
-                            .map(s -> new File(path, s))
-                            .anyMatch(f -> !hashes.get(f.getName()).equals(FileOps.calculateCheckSum(f)))) {
-                        Logger.logDebug("jar file has invalid hashcode");
-                        downloadJavaStatic = true;
-                    }
+                } else if (JAVA_FILES.stream()
+                        .map(s -> new File(path, s))
+                        .anyMatch(f -> !hashes.get(f.getName()).equals(FileOps.calculateCheckSum(f)))) {
+                    Logger.logDebug("java file has invalid hashcode");
+                    downloadJavaStatic = true;
                 }
             }
         }
@@ -303,15 +300,19 @@ public final class FileDeps {
             Logger.logDebug("Processing JavaFXStatic dependencies at " + javafxStatic.toString());
 
             if (!Files.isDirectory(javafxStatic)) {
+                if (customJavaFXLocation) {
+                    throw new IOException ("A location for the static sdk JavaFX libs was supplied, but it doesn't exist: " + javafxStatic);
+                }
                 downloadJavaFXStatic = true;
             } else {
                 String path = javafxStatic.toString();
-                if (JAVAFX_FILES.stream().map(s -> new File(path, s)).anyMatch(f -> !f.exists()) ||
-                        (isLinuxAarch64 && JAVAFX_STATIC_FILES.stream().map(s -> new File(path, s)).anyMatch(f -> !f.exists())) ||
-                        (!isLinuxAarch64 && JAVAFX_STATIC_FILES.stream().map(s -> new File(path, s)).noneMatch(File::exists))) {
+                if (JAVAFX_FILES.stream().map(s -> new File(path, s)).anyMatch(f -> !f.exists())) {
                     Logger.logDebug("JavaFX file not found");
+                    if (customJavaFXLocation) {
+                        throw new IOException ("A location for the static sdk JavaFX libs was supplied, but the JavaFX libs are missing from " + javafxStatic);
+                    }
                     downloadJavaFXStatic = true;
-                } else if (configuration.isEnableCheckHash()) {
+                } else if (!customJavaFXLocation && configuration.isEnableCheckHash()) {
                     Logger.logDebug("Checking javafx static sdk hashes");
                     String md5File = getChecksumFileName(javafxStatic.getParent(), "javafxStaticSdk",
                             javafxStatic.getParent().getParent().getFileName().toString());
@@ -355,7 +356,7 @@ public final class FileDeps {
 
         try {
             if (downloadJavaStatic) {
-                downloadJavaZip(target);
+                downloadJavaZip(vmoneTarget);
             }
 
             if (downloadJavaFXStatic) {
@@ -406,7 +407,6 @@ public final class FileDeps {
     private void downloadJavaZip(String target) throws IOException {
         Logger.logInfo("Downloading Java Static Libs...");
         String javaZip = Strings.substitute(JAVA_STATIC_ZIP, Map.of(
-            "staticjdk", configuration.usesJDK11() ? Constants.DEFAULT_JAVASDK_PATH11 : Constants.DEFAULT_JAVASDK_PATH,
             "version", configuration.getJavaStaticSdkVersion(),
             "target", target));
         FileOps.downloadAndUnzip(JAVA_STATIC_URL + javaZip,
