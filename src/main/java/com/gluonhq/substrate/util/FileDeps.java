@@ -52,7 +52,54 @@ public final class FileDeps {
     private static final String JAVA_STATIC_ZIP = "${staticjdk}-${target}-gvm-${version}.zip";
     private static final String JAVA_STATIC_URL = "https://download2.gluonhq.com/substrate/staticjdk/";
     private static final String JAVAFX_STATIC_ZIP = "openjfx-${version}-${target}-static${variant}.zip";
-    private static final String JAVAFX_STATIC_URL = "https://download2.gluonhq.com/substrate/javafxstaticsdk/";
+
+    /**
+     * Where the JavaFX static SDK is fetched from. Defaults to Embrace's patched SDK; Gluon's own is
+     * https://download2.gluonhq.com/substrate/javafxstaticsdk/ and pairs with version "21-ea+11.3".
+     */
+    private static final String JAVAFX_STATIC_URL_DEFAULT =
+            "https://github.com/ACS-Embrace/jfx/releases/download/embrace-jfx-21+12-v1.0.0/";
+
+    /** System property, then environment variable, then the default above. */
+    private static final String JAVAFX_STATIC_URL_PROPERTY = "javafx.static.url";
+    private static final String JAVAFX_STATIC_URL_ENV = "JAVAFX_STATIC_URL";
+
+    /**
+     * Resolves the JavaFX static SDK base URL, allowing an override so an unpublished SDK can be tested
+     * without editing and rebuilding this class.
+     *
+     * SECURITY. An override changes where code that gets linked into the shipped application comes from,
+     * so it is deliberately constrained and noisy rather than silent:
+     *   - https only, because this fetches code over a network;
+     *   - every override is logged at INFO, so it appears in any build log rather than passing unnoticed.
+     *
+     * Note that Substrate's own md5 check offers no protection here. That checksum is GENERATED from
+     * whatever was downloaded and stored locally, so it detects later local corruption - not a
+     * substituted source. Trust in the artifact comes from trusting this URL.
+     */
+    private static String javafxStaticUrl() {
+        String override = System.getProperty(JAVAFX_STATIC_URL_PROPERTY);
+        String from = "-D" + JAVAFX_STATIC_URL_PROPERTY;
+        if (override == null || override.isBlank()) {
+            override = System.getenv(JAVAFX_STATIC_URL_ENV);
+            from = "$" + JAVAFX_STATIC_URL_ENV;
+        }
+        if (override == null || override.isBlank()) {
+            return JAVAFX_STATIC_URL_DEFAULT;
+        }
+        override = override.trim();
+        if (!override.startsWith("https://")) {
+            throw new IllegalArgumentException("Refusing a non-https JavaFX static SDK URL from "
+                    + from + ": " + override
+                    + "\nThis fetches code that is linked into the application, so https is required.");
+        }
+        if (!override.endsWith("/")) {
+            override = override + "/";
+        }
+        Logger.logInfo("JavaFX static SDK URL OVERRIDDEN via " + from + ": " + override
+                + " (default is " + JAVAFX_STATIC_URL_DEFAULT + ")");
+        return override;
+    }
 
     private static final List<String> JAVA_FILES = Arrays.asList(
             "libjava.a", "libnet.a", "libnio.a", "libzip.a", "libprefs.a"
@@ -377,7 +424,9 @@ public final class FileDeps {
             "version", configuration.getJavafxStaticSdkVersion(),
             "target", osarch,
             "variant", variant));
-        FileOps.downloadAndUnzip(JAVAFX_STATIC_URL + javafxZip,
+        String url = javafxStaticUrl() + javafxZip;
+        Logger.logInfo("JavaFX static SDK: " + url);
+        FileOps.downloadAndUnzip(url,
                 Constants.USER_SUBSTRATE_PATH,
                 javafxZip,
                 "javafxStaticSdk",

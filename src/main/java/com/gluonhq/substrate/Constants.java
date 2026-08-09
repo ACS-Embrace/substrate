@@ -108,7 +108,18 @@ public class Constants {
 
     public static final String DEFAULT_JAVA_STATIC_SDK_VERSION = "18-ea+prep18-9";
     public static final String DEFAULT_JAVA_STATIC_SDK_VERSION11 = "11-ea+10";
-    public static final String DEFAULT_JAVAFX_STATIC_SDK_VERSION  = "21-ea+11.3";
+    /**
+     * Embrace's patched JavaFX static SDK. Derived from Gluon's "21-ea+11.3", which is pristine upstream
+     * JavaFX 21+12, plus two CSS performance patches. Published from ACS-Embrace/jfx, release
+     * embrace-jfx-21+12-v1.0.0, which also carries the measurements behind them.
+     *
+     * Contains no '+': the version becomes part of a download filename and a URL path, and nothing here
+     * should depend on that character surviving either.
+     *
+     * To build against Gluon's unpatched SDK instead, set this back to "21-ea+11.3" - the download URL
+     * also needs pointing back at Gluon (see FileDeps.JAVAFX_STATIC_URL_DEFAULT).
+     */
+    public static final String DEFAULT_JAVAFX_STATIC_SDK_VERSION  = "21-ea-11.3-embrace-1.0.0";
     public static final String DEFAULT_JAVAFX_JS_SDK_VERSION  = "18-internal+0-2021-09-02-165800";
     public static final String DEFAULT_SYSROOT_VERSION  = "20210424";
     public static final String DEFAULT_CLIBS_VERSION  = "27";
