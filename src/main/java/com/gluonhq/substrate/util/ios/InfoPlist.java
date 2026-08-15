@@ -94,7 +94,7 @@ public class InfoPlist {
 
     private Path tmpStoryboardsDir;
     private String bundleId;
-    private String minOSVersion = "11.0";
+    private String minOSVersion = Constants.DEFAULT_IOS_MIN_OS_VERSION;
 
     public InfoPlist(ProcessPaths paths, InternalProjectConfiguration projectConfiguration, XcodeUtils.SDKS sdk) throws IOException {
         this.paths = Objects.requireNonNull(paths);
@@ -215,7 +215,7 @@ public class InfoPlist {
             }
             dict.put("DTPlatformName", xcodeUtil.getPlatformName());
             dict.put("DTSDKName", xcodeUtil.getSDKName());
-            dict.put("MinimumOSVersion", "11.0");
+            dict.put("MinimumOSVersion", Constants.DEFAULT_IOS_MIN_OS_VERSION);
             dict.put("CFBundleSupportedPlatforms", new NSArray(new NSString(sdk.getSdkName())));
             dict.put("DTPlatformVersion", xcodeUtil.getPlatformVersion());
             dict.put("DTPlatformBuild", xcodeUtil.getPlatformBuild());
@@ -249,7 +249,7 @@ public class InfoPlist {
                             }
                         });
             }
-            orderedDict.put("MinimumOSVersion", minOSVersion != null ? minOSVersion : "11.0");
+            orderedDict.put("MinimumOSVersion", minOSVersion != null ? minOSVersion : Constants.DEFAULT_IOS_MIN_OS_VERSION);
 
             //             BinaryPropertyListWriter.write(new File(appDir, "Info.plist"), orderedDict);
             orderedDict.saveAsBinary(appPath.resolve("Info.plist"));
@@ -372,7 +372,7 @@ public class InfoPlist {
             throw new RuntimeException("Error: invalid path " + resourcePath);
         }
         if (minOSVersion == null) {
-            minOSVersion = "11.0";
+            minOSVersion = Constants.DEFAULT_IOS_MIN_OS_VERSION;
         }
         Files.walk(resourcePath, 1).forEach(p -> {
             if (Files.isDirectory(p)) {
@@ -494,7 +494,7 @@ public class InfoPlist {
                     userPath.resolve("MainScreen.storyboard"));
         }
         if (minOSVersion == null) {
-            minOSVersion = "11.0";
+            minOSVersion = Constants.DEFAULT_IOS_MIN_OS_VERSION;
         }
         tmpStoryboardsDir = tmpPath.resolve("storyboards");
         if (Files.exists(tmpStoryboardsDir)) {

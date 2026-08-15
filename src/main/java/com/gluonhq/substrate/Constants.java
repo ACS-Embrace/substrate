@@ -121,6 +121,15 @@ public class Constants {
      */
     public static final String DEFAULT_JAVAFX_STATIC_SDK_VERSION  = "21-ea-11.3-embrace-1.0.0";
     public static final String DEFAULT_JAVAFX_JS_SDK_VERSION  = "18-internal+0-2021-09-02-165800";
+    /**
+     * Minimum iOS version the app declares and is compiled against.
+     *
+     * Substrate hardcoded 11.0 in the Info.plist and in the compiler and linker flags, overwriting any
+     * MinimumOSVersion set in the project's own Default-Info.plist. Both matter: the App Store reads the
+     * plist, and the binary carries a version-min load command from the flags.
+     */
+    public static final String DEFAULT_IOS_MIN_OS_VERSION = "15.0";
+
     public static final String DEFAULT_SYSROOT_VERSION  = "20210424";
     public static final String DEFAULT_CLIBS_VERSION  = "27";
     public static final String DEFAULT_JAVASDK_PATH = "staticjdk";
