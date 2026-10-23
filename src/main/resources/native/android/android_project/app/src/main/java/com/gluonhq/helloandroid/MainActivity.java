@@ -525,6 +525,11 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback,
             // Remove top textfield editor on landscape
             outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI;
 
+            InputConnection mirrored = createMirroredInputConnection(outAttrs);
+            if (mirrored != null) {
+                return mirrored;
+            }
+
             return new BaseInputConnection(this, true) {
 
                 @Override
@@ -609,6 +614,23 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback,
                     }
                 }
             };
+        }
+
+        /**
+         * The connection from AttachExtended's keyboard module, which holds the focused field's text
+         * so keyboards can move the caret through it. Null when the module is not in the app, or no
+         * text field has focus; the connection above is used then.
+         */
+        private InputConnection createMirroredInputConnection(EditorInfo outAttrs) {
+            try {
+                Class<?> connection = Class.forName("com.gluonhq.helloandroid.MirroredInputConnection");
+                return (InputConnection) connection.getMethod("create", View.class, EditorInfo.class).invoke(null, this, outAttrs);
+            } catch (ClassNotFoundException e) {
+                return null;
+            } catch (Exception e) {
+                Log.e(TAG, "Could not create the mirrored input connection", e);
+                return null;
+            }
         }
 
         @Override
@@ -860,6 +882,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback,
             case KeyEvent.KEYCODE_SPACE: return KeyCode.SPACE;
             case KeyEvent.KEYCODE_ENTER: return KeyCode.ENTER;
             case KeyEvent.KEYCODE_DEL: return KeyCode.BACK_SPACE;
+            case KeyEvent.KEYCODE_FORWARD_DEL: return KeyCode.DELETE;
             case KeyEvent.KEYCODE_GRAVE: return KeyCode.DEAD_GRAVE;
             case KeyEvent.KEYCODE_MINUS: return KeyCode.MINUS;
             case KeyEvent.KEYCODE_EQUALS: return KeyCode.EQUALS;
