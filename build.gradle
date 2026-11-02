@@ -63,6 +63,42 @@ javadoc {
 
 build.dependsOn javadoc
 
+// The commit each jar is built from, written into its manifest so any published jar can be traced.
+// A "-dirty" suffix marks a build with uncommitted changes, which must not be published.
+ext.gitCommit = {
+    try {
+        def os = new ByteArrayOutputStream()
+        exec {
+            commandLine 'git', 'describe', '--always', '--dirty', '--abbrev=12', '--match', 'no-tags'
+            standardOutput = os
+            ignoreExitValue = true
+        }
+        return os.toString().trim() ?: 'unknown'
+    } catch (Exception e) {
+        return 'unknown'
+    }
+}()
+
+tasks.withType(Jar).configureEach {
+    manifest {
+        attributes('Implementation-Title': project.name,
+                'Implementation-Version': project.version,
+                'Git-Commit': gitCommit)
+    }
+}
+
+// Only committed release builds go to S3: test builds and snapshots stay in local Maven.
+tasks.withType(PublishToMavenRepository).configureEach {
+    doFirst {
+        if (project.version.toString().contains('-dev') || project.version.toString().endsWith('-SNAPSHOT')) {
+            throw new GradleException("${project.version} is a test build: publish it to local Maven only")
+        }
+        if (gitCommit.endsWith('-dirty') || gitCommit == 'unknown') {
+            throw new GradleException("Commit your changes before publishing ${project.version}, so the jars match a commit")
+        }
+    }
+}
+
 task sourcesJar(type: Jar) {
     from sourceSets.main.allJava
     archiveClassifier = 'sources'

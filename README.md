@@ -25,6 +25,34 @@ available that show you how to get started
 with Gluon Substrate. We recommend using your favourite IDE to run those
 samples.
 
+## Versions and releases (Embrace)
+
+This is Embrace's copy of Gluon Substrate. It is versioned `major.minor.patch-embrace`, independently
+of Gluon's numbering:
+
+* **major** when Embrace's builds must change to use the release,
+* **minor** for a new feature they can take without changes,
+* **patch** for fixes only.
+
+The `-embrace` marker matters: our releases are published under the same name as Gluon's
+(`com.gluonhq:substrate`, the name the GluonFX plugin asks for), so the marker stops a build from
+picking up a Gluon release of the same number. `CHANGELOG.md` lists what each version contains,
+including which Gluon version it is based on and which Gluon changes were taken since.
+
+* **Test builds** are versioned like `1.0.1-embrace-dev-keyboard` and go to local Maven only
+  (`./gradlew publishToMavenLocal`); publishing a `-dev` or `-SNAPSHOT` version to S3 is refused.
+* **Releases** are published from a clean checkout of a commit on `embrace_master` (publishing with
+  uncommitted changes is refused). Each release contains both the Android and iOS parts: Substrate's
+  native code ships as source and is compiled when the app is built.
+  1. Set the version in `gradle.properties` and add its entry to `CHANGELOG.md`.
+  2. Publish: `./gradlew clean publish` (needs `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`).
+  3. Tag the commit with the version and push the tag, e.g. `git tag 1.0.0-embrace && git push origin 1.0.0-embrace`.
+* Each jar's manifest carries `Implementation-Version` and `Git-Commit`.
+* Embrace's APK build pins the Substrate version for the GluonFX plugin, so the plugin's own default
+  does not decide which Substrate is used.
+
+Versions before 1.0.0-embrace were `0.1.x-SNAPSHOT`, which could change between builds.
+
 ## Compilation
 
 ### Linux hosts
