@@ -46,7 +46,8 @@ including which Gluon version it is based on and which Gluon changes were taken 
   native code ships as source and is compiled when the app is built.
   1. Set the version in `gradle.properties` and add its entry to `CHANGELOG.md`.
   2. Publish: `./gradlew clean publish` (needs `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`).
-  3. Tag the commit with the version and push the tag, e.g. `git tag 1.0.0-embrace && git push origin 1.0.0-embrace`.
+  3. Tag the commit with an annotated tag and push it, e.g.
+     `git tag -a 1.0.0-embrace -m "1.0.0-embrace" && git push origin 1.0.0-embrace`.
 * Each jar's manifest carries `Implementation-Version` and `Git-Commit`.
 * Embrace's APK build pins the Substrate version for the GluonFX plugin, so the plugin's own default
   does not decide which Substrate is used.
