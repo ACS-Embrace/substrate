@@ -695,7 +695,7 @@ public class InternalProjectConfiguration {
 
     static Version parseGraalVMJavaVersion(String versionString) {
         String realVersion = versionString.replace("-internal", "");
-        String pattern = "version \"(\\d{1,2}(\\.\\d+){0,2})\"";
+        String pattern = "version \"(\\d{1,2}(\\.\\d+){0,2})(\\.\\d+)*\"";
         Pattern r = Pattern.compile(pattern);
         Matcher m = r.matcher(realVersion);
         if (!m.find()) {
