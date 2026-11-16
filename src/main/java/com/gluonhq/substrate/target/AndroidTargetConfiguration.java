@@ -240,10 +240,12 @@ public class AndroidTargetConfiguration extends PosixTargetConfiguration {
     @Override
     List<String> getTargetSpecificAOTCompileFlags() throws IOException {
         ArrayList<String> flags = new ArrayList<String>(Arrays.asList(
-                "-H:-SpawnIsolates",
                 "-Dsvm.targetArch=" + projectConfiguration.getTargetTriplet().getArch(),
                 "-H:+UseCAPCache",
                 "-H:CAPCacheDir=" + getCapCacheDir().toAbsolutePath()));
+        if (!Boolean.getBoolean("substrate.android.isolates")) {
+            flags.add(0, "-H:-SpawnIsolates");
+        }
         return flags;
     }
 
