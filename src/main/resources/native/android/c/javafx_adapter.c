@@ -161,7 +161,9 @@ JNI_OnLoad_javafx_font(JavaVM *vm, void *reserved)
     }
     return JNI_VERSION_1_8;
 #else
-    return JNI_VERSION_1_4;
+    // Android's jni.h stops at JNI_VERSION_1_6, so the branch above is never compiled here.
+    // Built-in libraries must report at least 1.8 (0x00010008); GraalVM 25 enforces it.
+    return 0x00010008;
 #endif
 }
 
