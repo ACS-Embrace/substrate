@@ -56,8 +56,7 @@ public class IosTargetConfiguration extends DarwinTargetConfiguration {
     private static final List<String> iosAdditionalSourceFiles = Arrays.asList(
             "AppDelegate.m", "JvmFuncsFallbacks.c");
 
-    private static final List<String> ioslibs = Arrays.asList(
-            "-lpthread", "-llibchelper", "-lffi", "-ldarwin");
+    private static final List<String> ioslibs = Arrays.asList("-lpthread", "-lz");
 
     private static final List<String> javafxLibs = Arrays.asList(
             "prism_es2", "glass", "javafx_font", "prism_common", "javafx_iio");
@@ -73,8 +72,8 @@ public class IosTargetConfiguration extends DarwinTargetConfiguration {
 
     private static final String[] capFiles = {"AArch64LibCHelperDirectives.cap",
             "AMD64LibCHelperDirectives.cap", "BuiltinDirectives.cap",
-            "JNIHeaderDirectives.cap", "LibFFIHeaderDirectives.cap",
-            "LLVMDirectives.cap", "PosixDirectives.cap"};
+            "JNIHeaderDirectives.cap", "JNIHeaderDirectivesJDK22OrLater.cap", "LibFFIHeaderDirectives.cap",
+            "LLVMDirectives.cap", "PosixDirectives.cap", "RISCV64LibCHelperDirectives.cap"};
     private static final String capLocation= "/native/ios/cap/";
 
     public IosTargetConfiguration(ProcessPaths paths, InternalProjectConfiguration configuration ) {
@@ -132,9 +131,6 @@ public class IosTargetConfiguration extends DarwinTargetConfiguration {
                 "-isysroot", getSysroot()));
         if (isSimulator()) {
             flags.add("-DGVM_IOS_SIM");
-        }
-        if (!projectConfiguration.usesJDK11()) {
-            flags.add("-DGVM_17");
         }
         return flags;
     }
@@ -211,11 +207,6 @@ public class IosTargetConfiguration extends DarwinTargetConfiguration {
     @Override
     String getLinker() {
         return "clang";
-    }
-
-    @Override
-    protected List<Path> getStaticJDKLibPaths() throws IOException {
-        return Arrays.asList(fileDeps.getJavaSDKLibsPath());
     }
 
     @Override
@@ -335,20 +326,6 @@ public class IosTargetConfiguration extends DarwinTargetConfiguration {
             }
         }
         return appPath.toString() + "/" + appName;
-    }
-
-    @Override
-    public boolean createStaticLib() throws IOException, InterruptedException {
-        ProcessRunner linkRunner = new ProcessRunner("ar");
-        linkRunner.addArg("rcs");
-        Path dest = paths.getGvmPath().resolve("lib"+projectConfiguration.getAppName()+".a");
-        linkRunner.addArg(dest.toString());
-        linkRunner.addArg(getProjectObjectFile().toString());
-        linkRunner.addArgs(getAdditionalObjectFiles());
-        linkRunner.setInfo(true);
-        linkRunner.setLogToFile(true);
-        int result = linkRunner.runProcess("archive");
-        return result == 0;
     }
 
     private String getTargetArch() {

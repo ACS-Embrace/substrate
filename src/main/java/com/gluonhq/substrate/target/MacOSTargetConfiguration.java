@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019, 2023, Gluon
+ * Copyright (c) 2019, 2024, Gluon
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -31,7 +31,6 @@ import com.gluonhq.substrate.Constants;
 import com.gluonhq.substrate.model.InternalProjectConfiguration;
 import com.gluonhq.substrate.model.ProcessPaths;
 import com.gluonhq.substrate.util.FileOps;
-import com.gluonhq.substrate.util.Lib;
 import com.gluonhq.substrate.util.Logger;
 import com.gluonhq.substrate.util.XcodeUtils;
 import com.gluonhq.substrate.util.macos.CodeSigning;
@@ -56,17 +55,9 @@ public class MacOSTargetConfiguration extends DarwinTargetConfiguration {
 
     private static final List<String> javaFxDarwinLibs = Arrays.asList("objc");
     private static final List<String> javaFxDarwinFrameworks = Arrays.asList(
-            "ApplicationServices", "OpenGL", "QuartzCore", "Security", "Accelerate"
+            "ApplicationServices", "OpenGL", "QuartzCore", "Security", "Accelerate", "Cocoa", "Carbon"
     );
 
-    private static final List<Lib> staticJavaLibs = Arrays.asList(
-            Lib.of("java"), Lib.of("nio"), Lib.of("zip"), Lib.of("net"),
-            Lib.of("prefs"), Lib.of("j2pkcs11"), Lib.upTo(20, "fdlibm"), Lib.upTo(11, "sunec"),
-            Lib.of("extnet")
-    );
-    private static final List<String> staticJvmLibs = Arrays.asList(
-            "jvm", "libchelper", "darwin"
-    );
     private static final List<String> staticJavaFxLibs = Arrays.asList(
             "glass", "javafx_font", "javafx_iio", "prism_es2"
     );
@@ -145,16 +136,6 @@ public class MacOSTargetConfiguration extends DarwinTargetConfiguration {
         }
 
         return linkFlags;
-    }
-
-    @Override
-    List<String> getStaticJavaLibs() {
-        return filterApplicableLibs(staticJavaLibs);
-    }
-
-    @Override
-    List<String> getOtherStaticLibs() {
-        return staticJvmLibs;
     }
 
     @Override

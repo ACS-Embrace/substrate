@@ -326,11 +326,11 @@ public class SubstrateDispatcher {
             if (expected != null) {
                 Logger.logInfo(logTitle("RUN TASK (with expected)"));
 
-                String response = dispatcher.targetConfiguration.run();
-                if (expected.equals(response)) {
+                List<String> responses = dispatcher.targetConfiguration.run();
+                if (responses.contains(expected)) {
                     Logger.logInfo("Run ended successfully, the output: " + expected + " matched the expected result.");
                 } else {
-                    Logger.logSevere("Run failed, expected output: " + expected + ", output: " + response);
+                    Logger.logSevere("Run failed, expected output: " + expected + ", output: " + responses);
                     System.exit(1);
                 }
             } else {
