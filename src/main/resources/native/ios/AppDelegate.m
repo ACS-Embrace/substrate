@@ -25,6 +25,7 @@
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
+#include <signal.h>
 #import <UIKit/UIKit.h>
 #include <stdarg.h>
 #include "jni.h"
@@ -222,6 +223,10 @@ int startGVM(const char* userHome, const char* userTimeZone, const char* userLau
     {
         graalArgs[argc + i] = (char *)userArgs[i];
     }
+    // GraalVM 22.1 ignored SIGPIPE for every image. From GraalVM 23 it only does so when signal
+    // handling is enabled, which is off for library images such as this one. Without this, the
+    // first write to a socket iOS closed while the app was suspended kills the process on resume.
+    signal(SIGPIPE, SIG_IGN);
     (*run_main)(argsSize, graalArgs);
     free(graalArgs);
 
